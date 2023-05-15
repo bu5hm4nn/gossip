@@ -1125,6 +1125,14 @@ impl GossipUi {
         GLOBALS.media.has_failed(&unchecked_url)
     }
 
+    pub fn get_media(&mut self, url: Url) -> Option<TextureHandle> {
+        if let Some(th) = self.images.get(&url) {
+            return Some(th.to_owned());
+        } else {
+            None
+        }
+    }
+
     pub fn try_get_media(&mut self, ctx: &Context, url: Url) -> Option<TextureHandle> {
         // Do not keep retrying if failed
         if GLOBALS.media.has_failed(&url.to_unchecked_url()) {
@@ -1141,6 +1149,15 @@ impl GossipUi {
                 ctx.load_texture(url.0.clone(), color_image, TextureOptions::default());
             self.images.insert(url, texture_handle.clone());
             Some(texture_handle)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "video-ffmpeg")]
+    pub fn get_player(&mut self, url: Url) -> Option<Rc<RefCell<egui_video::Player>>> {
+        if let Some(player) = self.video_players.get(&url) {
+            return Some(player.to_owned());
         } else {
             None
         }

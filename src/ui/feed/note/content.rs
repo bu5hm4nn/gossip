@@ -197,11 +197,7 @@ fn show_image_toggle(app: &mut GossipUi, ui: &mut Ui, url: Url) {
     let url_string = url.to_string();
     let mut show_link = true;
 
-    // FIXME show/hide lists should persist app restarts
-    let show_image = (app.settings.show_media && !app.media_hide_list.contains(&url))
-        || (!app.settings.show_media && app.media_show_list.contains(&url));
-
-    if show_image {
+    if should_load_and_show_media(app, &url) {
         if let Some(response) = try_render_image(app, ui, url.clone()) {
             show_link = false;
 
@@ -263,7 +259,7 @@ fn show_image_toggle(app: &mut GossipUi, ui: &mut Ui, url: Url) {
 ///  - return: true if successfully rendered, false otherwise
 fn try_render_image(app: &mut GossipUi, ui: &mut Ui, url: Url) -> Option<Response> {
     let mut response_return = None;
-    if let Some(media) = app.try_get_media(ui.ctx(), url.clone()) {
+    if let Some(media) = app.get_media(url.clone()) {
         let size = media_scale(
             app.media_full_width_list.contains(&url),
             ui,
@@ -294,7 +290,15 @@ fn try_render_image(app: &mut GossipUi, ui: &mut Ui, url: Url) -> Option<Respons
                 add_media_menu(app, ui, url, &response);
                 response_return = Some(response);
             });
-    };
+    } else {
+        // needs download
+        // but only download if visible
+        if ui.is_rect_visible(ui.cursor()) {
+            // if download is successful,
+            // will be rendered on next pass
+            app.try_get_media(ui.ctx(), url);
+        }
+    }
     response_return
 }
 
@@ -303,11 +307,7 @@ fn show_video_toggle(app: &mut GossipUi, ui: &mut Ui, url: Url) {
     let url_string = url.to_string();
     let mut show_link = true;
 
-    // FIXME show/hide lists should persist app restarts
-    let show_video = (app.settings.show_media && !app.media_hide_list.contains(&url))
-        || (!app.settings.show_media && app.media_show_list.contains(&url));
-
-    if show_video {
+    if should_load_and_show_media(app, &url) {
         if let Some(response) = try_render_video(app, ui, url.clone()) {
             show_link = false;
 
@@ -369,7 +369,7 @@ fn show_video_toggle(app: &mut GossipUi, ui: &mut Ui, url: Url) {
 fn try_render_video(app: &mut GossipUi, ui: &mut Ui, url: Url) -> Option<Response> {
     let mut response_return = None;
     let show_full_width = app.media_full_width_list.contains(&url);
-    if let Some(player_ref) = app.try_get_player(ui.ctx(), url.clone()) {
+    if let Some(player_ref) = app.get_player(url.clone()) {
         if let Ok(mut player) = player_ref.try_borrow_mut() {
             let size = media_scale(
                 show_full_width,
@@ -396,6 +396,14 @@ fn try_render_video(app: &mut GossipUi, ui: &mut Ui, url: Url) -> Option<Respons
             // TODO fix click action
             let new_rect = response.rect.shrink(size.x / 2.0);
             response_return = Some(response.with_new_rect(new_rect))
+        }
+    } else {
+        // needs download
+        // but only download if visible
+        if ui.is_rect_visible(ui.cursor()) {
+            // if download is successful,
+            // will be rendered on next pass
+            app.try_get_player(ui.ctx(), url);
         }
     }
     response_return
@@ -508,4 +516,10 @@ fn add_media_menu(app: &mut GossipUi, ui: &mut Ui, url: Url, response: &Response
             });
         }
     }
+}
+
+fn should_load_and_show_media( app: &mut GossipUi, url: &Url ) -> bool {
+    // FIXME show/hide lists should persist app restarts
+    (app.settings.show_media && !app.media_hide_list.contains(&url))
+        || (!app.settings.show_media && app.media_show_list.contains(&url))
 }
