@@ -261,8 +261,8 @@ impl RelayEntry {
         }
         let text = RichText::new(title).size(16.5);
         let pos = rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE, TEXT_TOP);
-        let rect = draw_text_at(ui, pos, text.into(), Align::LEFT, Some(self.accent), None);
-        ui.interact(rect, ui.next_auto_id(), Sense::hover())
+        let title_rect = draw_text_at(ui, pos, text.into(), Align::LEFT, Some(self.accent), None);
+        ui.interact(title_rect, ui.next_auto_id(), Sense::hover())
             .on_hover_text(self.relay.url.as_str());
 
         // paint status indicator
@@ -303,11 +303,94 @@ impl RelayEntry {
             }
         };
         let pos = pos + vec2(-STATUS_SYMBOL_SPACE, 0.0);
-        let rect = draw_text_at(ui, pos, symbol.into(), Align::LEFT, Some(color), None);
 
-        // set tooltip
-        ui.interact(rect, ui.next_auto_id(), Sense::hover())
-            .on_hover_text(tooltip);
+        // ---- status symbol ----
+        let symbol_rect = draw_text_at(ui, pos, symbol.into(), Align::LEFT, Some(color), None);
+        ui.interact(symbol_rect, ui.next_auto_id(), Sense::hover())
+                .on_hover_text(tooltip);
+
+        // short stats for list view
+
+        if self.view == RelayEntryView::List {
+            // ---- rate ----
+            let (rate_pos, rate_rect) = if self.relay.last_connected_at.is_some() {
+                let rate_pos = title_rect.right_top() + vec2(20.0, 3.0);
+                let text = RichText::new(format!(
+                    "{:.0}%",
+                    self.relay.success_rate() * 100.0
+                ));
+                let id = ui.auto_id_with("rate-short-stat");
+                let (rate_galley, rate_response) = allocate_text_at(
+                    ui,
+                    rate_pos,
+                    text.into(),
+                    Align::LEFT,
+                    id);
+
+                // ---- draw background oval ----
+                let rate_rect = rate_response.rect;
+                let bg_rect =
+                    egui::Rect::from_x_y_ranges(rate_pos.x - 7.0..=rate_pos.x + (rate_rect.width() + 7.0), rate_pos.y - 5.0..=rate_pos.y + 18.0);
+                let bg_radius = bg_rect.height() / 2.0;
+                ui.painter().rect_filled(
+                    bg_rect,
+                    egui::Rounding::same(bg_radius),
+                    ui.visuals().code_bg_color,
+                );
+
+                // draw rate
+                draw_text_galley_at(
+                    ui,
+                    rate_pos,
+                    rate_galley,
+                    Some(ui.visuals().text_color()),
+                    None,
+                );
+
+                (rate_pos, rate_response.rect)
+            } else {
+                (pos, symbol_rect)
+            };
+
+            if self.user_count.is_some() {
+                // ---- Following ----
+                let follow_pos = rate_pos + vec2(rate_rect.width() + 20.0, 0.0);
+                // let mut active = self.enabled;
+                let text = if let Some(count) = self.user_count {
+                    RichText::new(format!("\u{1F511} {}", count))
+                } else {
+                    // active = false;
+                    RichText::new("")
+                };
+                let id = ui.auto_id_with("following-short-stat");
+                let (follow_galley, following_response) = allocate_text_at(
+                    ui,
+                    follow_pos,
+                    text.into(),
+                    Align::LEFT,
+                    id);
+
+                // ---- draw background oval ----
+                let following_rect = following_response.rect;
+                let bg_rect =
+                    egui::Rect::from_x_y_ranges(follow_pos.x - 7.0..=follow_pos.x + (following_rect.width() + 7.0), rate_pos.y - 5.0..=rate_pos.y + 18.0);
+                let bg_radius = bg_rect.height() / 2.0;
+                ui.painter().rect_filled(
+                    bg_rect,
+                    egui::Rounding::same(bg_radius),
+                    ui.visuals().code_bg_color,
+                );
+
+                // draw following
+                draw_text_galley_at(
+                    ui,
+                    follow_pos,
+                    follow_galley,
+                    Some(ui.visuals().text_color()),
+                    None,
+                );
+            }
+        }
     }
 
     fn paint_frame(&self, ui: &mut Ui, rect: &Rect) {
@@ -327,7 +410,7 @@ impl RelayEntry {
     fn paint_edit_btn(&mut self, ui: &mut Ui, rect: &Rect) -> Response {
         let id = self.make_id("edit_btn");
         if self.relay.usage_bits == 0 {
-            let pos = rect.right_top() + vec2(-TEXT_RIGHT, 10.0 + OUTER_MARGIN_TOP);
+            let pos = rect.right_top() + vec2(-TEXT_RIGHT, TEXT_TOP + 4.0);
             let text = RichText::new("pick up & configure");
             let response =
                 draw_link_at(ui, id, pos, text.into(), Align::RIGHT, self.enabled, false)
@@ -544,37 +627,14 @@ impl RelayEntry {
         }
     }
 
-    fn paint_usage(&self, ui: &mut Ui, rect: &Rect) {
-        const RIGHT: f32 = -17.0;
+    fn paint_reasons(&self, ui: &mut Ui, rect: &Rect) {
         const SPACE: f32 = 23.0;
 
-        // match self.view { RelayEntryView::Detail => ... }
-        let right = pos2(rect.max.x, rect.min.y)
-            + vec2(-TEXT_RIGHT - EDIT_BTN_SIZE - SPACE, TEXT_TOP + 4.0);
+        let right = if self.relay.usage_bits == 0 { 100.0 } else { 0.0 };
 
-        let align = Align::Center;
-
-        let bg_rect =
-            egui::Rect::from_x_y_ranges(right.x - 150.0..=right.x, right.y - 5.0..=right.y + 18.0);
-        let bg_radius = bg_rect.height() / 2.0;
-        ui.painter().rect_filled(
-            bg_rect,
-            egui::Rounding::same(bg_radius),
-            ui.visuals().code_bg_color,
-        );
-
-        fn switch(ui: &mut Ui, str: &str, on: bool) -> (RichText, Color32) {
-            let active = ui.visuals().text_color();
-            let inactive = ui.visuals().text_color().gamma_multiply(0.4);
-            if on {
-                (RichText::new(str), active)
-            } else {
-                (RichText::new(str), inactive)
-            }
-        }
-
-        // ---- usage text ----
-        let pos = right + vec2(RIGHT - 7.0 * SPACE, 0.0);
+        // ---- reason text ----
+        let pos = rect.right_top()
+            + vec2(-TEXT_RIGHT - EDIT_BTN_SIZE - SPACE - right, TEXT_TOP + 4.0);
         draw_text_at(
             ui,
             pos,
@@ -583,56 +643,87 @@ impl RelayEntry {
             Some(ui.visuals().text_color()),
             None,
         );
+    }
 
-        // ---- R ----
-        let pos = right + vec2(RIGHT - 5.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "R", self.usage.read);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("R"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(READ_HOVER_TEXT);
+    fn paint_usage(&self, ui: &mut Ui, rect: &Rect) {
+        const RIGHT: f32 = -17.0;
+        const SPACE: f32 = 23.0;
 
-        // ---- I ----
-        let pos = right + vec2(RIGHT - 4.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "I", self.usage.inbox);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("I"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(INBOX_HOVER_TEXT);
+        let right = rect.right_top()
+            + vec2(-TEXT_RIGHT, TEXT_TOP + STATS_Y_SPACING);
 
-        // ---- + ----
-        let pos = pos - vec2(SPACE / 2.0, 0.0);
-        draw_text_at(ui, pos, "+".into(), align, Some(color), None);
+        if self.relay.usage_bits != 0 {
+            let align = Align::Center;
 
-        // ---- W ----
-        let pos = right + vec2(RIGHT - 3.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "W", self.usage.write);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("W"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(WRITE_HOVER_TEXT);
+            let bg_rect =
+                egui::Rect::from_x_y_ranges(right.x - 150.0..=right.x, right.y - 5.0..=right.y + 18.0);
+            let bg_radius = bg_rect.height() / 2.0;
+            ui.painter().rect_filled(
+                bg_rect,
+                egui::Rounding::same(bg_radius),
+                ui.visuals().code_bg_color,
+            );
 
-        // ---- O ----
-        let pos = right + vec2(RIGHT - 2.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "O", self.usage.outbox);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("O"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(OUTBOX_HOVER_TEXT);
+            fn switch(ui: &mut Ui, str: &str, on: bool) -> (RichText, Color32) {
+                let active = ui.visuals().text_color();
+                let inactive = ui.visuals().text_color().gamma_multiply(0.4);
+                if on {
+                    (RichText::new(str), active)
+                } else {
+                    (RichText::new(str), inactive)
+                }
+            }
 
-        // ---- + ----
-        let pos = pos - vec2(SPACE / 2.0, 0.0);
-        draw_text_at(ui, pos, "+".into(), align, Some(color), None);
+            // ---- R ----
+            let pos = right + vec2(RIGHT - 5.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "R", self.usage.read);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("R"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(READ_HOVER_TEXT);
 
-        // ---- D ----
-        let pos = right + vec2(RIGHT - 1.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "D", self.usage.discover);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("D"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(DISCOVER_HOVER_TEXT);
+            // ---- I ----
+            let pos = right + vec2(RIGHT - 4.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "I", self.usage.inbox);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("I"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(INBOX_HOVER_TEXT);
 
-        // ---- A ----
-        let pos = right + vec2(RIGHT - 0.0 * SPACE, 0.0);
-        let (text, color) = switch(ui, "A", self.usage.advertise);
-        let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("A"));
-        draw_text_galley_at(ui, pos, galley, Some(color), None);
-        response.on_hover_text(ADVERTISE_HOVER_TEXT);
+            // ---- + ----
+            let pos = pos - vec2(SPACE / 2.0, 0.0);
+            draw_text_at(ui, pos, "+".into(), align, Some(color), None);
+
+            // ---- W ----
+            let pos = right + vec2(RIGHT - 3.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "W", self.usage.write);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("W"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(WRITE_HOVER_TEXT);
+
+            // ---- O ----
+            let pos = right + vec2(RIGHT - 2.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "O", self.usage.outbox);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("O"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(OUTBOX_HOVER_TEXT);
+
+            // ---- + ----
+            let pos = pos - vec2(SPACE / 2.0, 0.0);
+            draw_text_at(ui, pos, "+".into(), align, Some(color), None);
+
+            // ---- D ----
+            let pos = right + vec2(RIGHT - 1.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "D", self.usage.discover);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("D"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(DISCOVER_HOVER_TEXT);
+
+            // ---- A ----
+            let pos = right + vec2(RIGHT - 0.0 * SPACE, 0.0);
+            let (text, color) = switch(ui, "A", self.usage.advertise);
+            let (galley, response) = allocate_text_at(ui, pos, text.into(), align, self.make_id("A"));
+            draw_text_galley_at(ui, pos, galley, Some(color), None);
+            response.on_hover_text(ADVERTISE_HOVER_TEXT);
+        }
     }
 
     fn paint_nip11(&self, ui: &mut Ui, rect: &Rect) {
@@ -1080,9 +1171,7 @@ impl RelayEntry {
             self.paint_frame(ui, &rect);
             self.paint_title(ui, &rect);
             response |= self.paint_edit_btn(ui, &rect);
-            if self.relay.usage_bits != 0 {
-                self.paint_usage(ui, &rect);
-            }
+            self.paint_reasons(ui, &rect);
         }
 
         response
@@ -1097,6 +1186,7 @@ impl RelayEntry {
             self.paint_title(ui, &rect);
             response |= self.paint_edit_btn(ui, &rect);
             self.paint_stats(ui, &rect);
+            self.paint_reasons(ui, &rect);
             if self.relay.usage_bits != 0 {
                 self.paint_usage(ui, &rect);
             }
