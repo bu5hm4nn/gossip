@@ -63,7 +63,11 @@ const COPY_SYMBOL: &str = "\u{2398}";
 /// Status symbol for status color indicator
 const STATUS_SYMBOL: &str = "\u{25CF}";
 /// Space reserved for status symbol before title
-const STATUS_SYMBOL_SPACE: f32 = 18.0;
+const STATUS_SYMBOL_SPACE: f32 = 25.0;
+/// Space reserved for short stats before title
+const SHORT_STAT_RATE_WIDTH: f32 = 30.0;
+const SHORT_STAT_FOLLOW_WIDTH: f32 = 50.0;
+const SHORT_STATS_SPACE: f32 = SHORT_STAT_RATE_WIDTH + SHORT_STAT_FOLLOW_WIDTH + 40.0;
 /// Max length of title string
 const TITLE_MAX_LEN: usize = 50;
 /// First stat column x location
@@ -251,20 +255,7 @@ impl RelayEntry {
         ui.allocate_exact_size(vec2(available_width, height), Sense::hover())
     }
 
-    fn paint_title(&self, ui: &mut Ui, rect: &Rect) {
-        let title = self.relay.url.as_str().trim_start_matches("wss://");
-        let title = title.trim_start_matches("ws://");
-        let title = title.trim_end_matches('/');
-        let mut title = safe_truncate(title, TITLE_MAX_LEN).to_string();
-        if self.relay.url.0.len() > TITLE_MAX_LEN {
-            title.push('\u{2026}'); // append ellipsis
-        }
-        let text = RichText::new(title).size(16.5);
-        let pos = rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE, TEXT_TOP);
-        let title_rect = draw_text_at(ui, pos, text.into(), Align::LEFT, Some(self.accent), None);
-        ui.interact(title_rect, ui.next_auto_id(), Sense::hover())
-            .on_hover_text(self.relay.url.as_str());
-
+    fn paint_status(&self, ui: &mut Ui, rect: &Rect) {
         // paint status indicator
         // green - connected
         // gray - disconnected
@@ -302,35 +293,26 @@ impl RelayEntry {
                 }
             }
         };
-        let pos = pos + vec2(-STATUS_SYMBOL_SPACE, 0.0);
+
+        let pos = rect.min + vec2(TEXT_LEFT, TEXT_TOP);
 
         // ---- status symbol ----
         let symbol_rect = draw_text_at(ui, pos, symbol.into(), Align::LEFT, Some(color), None);
         ui.interact(symbol_rect, ui.next_auto_id(), Sense::hover())
                 .on_hover_text(tooltip);
+    }
 
-        // short stats for list view
-
+    fn paint_short_stats(&self, ui: &mut Ui, rect: &Rect) {
         if self.view == RelayEntryView::List {
-            // ---- rate ----
-            let (rate_pos, rate_rect) = if self.relay.last_connected_at.is_some() {
-                let rate_pos = title_rect.right_top() + vec2(20.0, 3.0);
-                let text = RichText::new(format!(
-                    "{:.0}%",
-                    self.relay.success_rate() * 100.0
-                ));
-                let id = ui.auto_id_with("rate-short-stat");
-                let (rate_galley, rate_response) = allocate_text_at(
-                    ui,
-                    rate_pos,
-                    text.into(),
-                    Align::LEFT,
-                    id);
+            // draw rate only if ever connected to this relay
+            if self.relay.last_connected_at.is_some() {
+                let rate_pos = rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE, TEXT_TOP + 3.0);
 
                 // ---- draw background oval ----
-                let rate_rect = rate_response.rect;
                 let bg_rect =
-                    egui::Rect::from_x_y_ranges(rate_pos.x - 7.0..=rate_pos.x + (rate_rect.width() + 7.0), rate_pos.y - 5.0..=rate_pos.y + 18.0);
+                    egui::Rect::from_x_y_ranges(
+                        rate_pos.x - 7.0..=rate_pos.x + (SHORT_STAT_RATE_WIDTH + 7.0),
+                        rate_pos.y - 5.0..=rate_pos.y + 18.0);
                 let bg_radius = bg_rect.height() / 2.0;
                 ui.painter().rect_filled(
                     bg_rect,
@@ -338,59 +320,73 @@ impl RelayEntry {
                     ui.visuals().code_bg_color,
                 );
 
-                // draw rate
-                draw_text_galley_at(
+                // ---- draw rate text ----
+                let text = RichText::new(format!(
+                    "{:.0}%",
+                    self.relay.success_rate() * 100.0
+                ));
+                draw_text_at(
                     ui,
                     rate_pos,
-                    rate_galley,
+                    text.into(),
+                    Align::LEFT,
                     Some(ui.visuals().text_color()),
                     None,
                 );
-
-                (rate_pos, rate_response.rect)
-            } else {
-                (pos, symbol_rect)
-            };
+            }
 
             if self.user_count.is_some() {
                 // ---- Following ----
-                let follow_pos = rate_pos + vec2(rate_rect.width() + 20.0, 0.0);
-                // let mut active = self.enabled;
+                let follow_pos = rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE + SHORT_STAT_RATE_WIDTH + 20.0, TEXT_TOP + 3.0);
+
+                // ---- draw background oval ----
+                let bg_rect =
+                    egui::Rect::from_x_y_ranges(
+                        follow_pos.x - 7.0..=follow_pos.x + (SHORT_STAT_FOLLOW_WIDTH + 7.0),
+                        follow_pos.y - 5.0..=follow_pos.y + 18.0);
+                let bg_radius = bg_rect.height() / 2.0;
+                ui.painter().rect_filled(
+                    bg_rect,
+                    egui::Rounding::same(bg_radius),
+                    ui.visuals().code_bg_color,
+                );
+
+                // ---- draw following text ----
                 let text = if let Some(count) = self.user_count {
                     RichText::new(format!("\u{1F511} {}", count))
                 } else {
                     // active = false;
                     RichText::new("")
                 };
-                let id = ui.auto_id_with("following-short-stat");
-                let (follow_galley, following_response) = allocate_text_at(
+                draw_text_at(
                     ui,
                     follow_pos,
                     text.into(),
                     Align::LEFT,
-                    id);
-
-                // ---- draw background oval ----
-                let following_rect = following_response.rect;
-                let bg_rect =
-                    egui::Rect::from_x_y_ranges(follow_pos.x - 7.0..=follow_pos.x + (following_rect.width() + 7.0), rate_pos.y - 5.0..=rate_pos.y + 18.0);
-                let bg_radius = bg_rect.height() / 2.0;
-                ui.painter().rect_filled(
-                    bg_rect,
-                    egui::Rounding::same(bg_radius),
-                    ui.visuals().code_bg_color,
-                );
-
-                // draw following
-                draw_text_galley_at(
-                    ui,
-                    follow_pos,
-                    follow_galley,
                     Some(ui.visuals().text_color()),
                     None,
                 );
             }
         }
+    }
+
+    fn paint_title(&self, ui: &mut Ui, rect: &Rect) {
+        let pos = match self.view {
+            RelayEntryView::List => rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE + SHORT_STATS_SPACE, TEXT_TOP),
+            _ => rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE, TEXT_TOP),
+        };
+
+        let title = self.relay.url.as_str().trim_start_matches("wss://");
+        let title = title.trim_start_matches("ws://");
+        let title = title.trim_end_matches('/');
+        let mut title = safe_truncate(title, TITLE_MAX_LEN).to_string();
+        if self.relay.url.0.len() > TITLE_MAX_LEN {
+            title.push('\u{2026}'); // append ellipsis
+        }
+        let text = RichText::new(title).size(16.5);
+        let title_rect = draw_text_at(ui, pos, text.into(), Align::LEFT, Some(self.accent), None);
+        ui.interact(title_rect, ui.next_auto_id(), Sense::hover())
+            .on_hover_text(self.relay.url.as_str());
     }
 
     fn paint_frame(&self, ui: &mut Ui, rect: &Rect) {
@@ -1169,6 +1165,8 @@ impl RelayEntry {
         // all the heavy lifting is only done if it's actually visible
         if ui.is_rect_visible(rect) {
             self.paint_frame(ui, &rect);
+            self.paint_status(ui, &rect);
+            self.paint_short_stats(ui, &rect);
             self.paint_title(ui, &rect);
             response |= self.paint_edit_btn(ui, &rect);
             self.paint_reasons(ui, &rect);
@@ -1183,6 +1181,7 @@ impl RelayEntry {
         // all the heavy lifting is only done if it's actually visible
         if ui.is_rect_visible(rect) {
             self.paint_frame(ui, &rect);
+            self.paint_status(ui, &rect);
             self.paint_title(ui, &rect);
             response |= self.paint_edit_btn(ui, &rect);
             self.paint_stats(ui, &rect);
@@ -1201,6 +1200,7 @@ impl RelayEntry {
         // all the heavy lifting is only done if it's actually visible
         if ui.is_rect_visible(rect) {
             self.paint_frame(ui, &rect);
+            self.paint_status(ui, &rect);
             self.paint_title(ui, &rect);
             self.paint_stats(ui, &rect);
             paint_hline(ui, &rect, HLINE_1_Y_OFFSET);
