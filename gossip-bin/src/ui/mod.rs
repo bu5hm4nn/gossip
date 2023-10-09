@@ -709,8 +709,16 @@ impl GossipUi {
     }
 
     fn side_panel(&mut self, ctx: &Context) {
+        let mut widget_visuals = ctx.style().visuals.widgets.clone();
+        if ctx.style().visuals.dark_mode {
+            widget_visuals.hovered.fg_stroke.color = Color32::from_white_alpha(1);
+        } else {
+            widget_visuals.hovered.fg_stroke.color = Color32::from_black_alpha(20);
+        }
+
         egui::SidePanel::left("main-naviation-panel")
             .show_separator_line(false)
+            .visuals(widget_visuals)
             .frame(
                 egui::Frame::none()
                     .inner_margin({
