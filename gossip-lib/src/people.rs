@@ -5,10 +5,11 @@ use dashmap::{DashMap, DashSet};
 use gossip_relay_picker::Direction;
 use image::RgbaImage;
 use nostr_types::{
-    Event, EventKind, Metadata, PreEvent, PublicKey, RelayUrl, Tag, UncheckedUrl, Unixtime, Url,
+    ContentEncryptionAlgorithm, Event, EventKind, Metadata, PreEvent, PublicKey, RelayUrl, Tag,
+    UncheckedUrl, Unixtime, Url,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task;
@@ -16,34 +17,29 @@ use tokio::task;
 /// Person type, aliased to the latest version
 pub type Person = crate::storage::types::Person2;
 
-/// Lists people can be added to
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PersonList {
-    Muted = 0,
-    Followed = 1,
-    Priority = 2,
-    Custom(u8),
+/// PersonList type, aliased to the latest version
+pub type PersonList = crate::storage::types::PersonList1;
+
+/// Person List Compare Data
+#[derive(Debug, Clone)]
+pub struct PersonListEventData {
+    /// The timestamp of the latest event
+    pub when: Unixtime,
+
+    /// The number of public entries in the latest event
+    pub public_len: usize,
+
+    /// The number of private entires in the latest event, or None if it
+    /// couldn't be computed (not logged in, Following event, or none found)
+    pub private_len: Option<usize>,
 }
 
-impl From<u8> for PersonList {
-    fn from(u: u8) -> Self {
-        match u {
-            0 => PersonList::Muted,
-            1 => PersonList::Followed,
-            2 => PersonList::Priority,
-            u => PersonList::Custom(u),
-        }
-    }
-}
-
-impl From<PersonList> for u8 {
-    fn from(e: PersonList) -> u8 {
-        match e {
-            PersonList::Muted => 0,
-            PersonList::Followed => 1,
-            PersonList::Priority => 2,
-            PersonList::Custom(u) => u,
+impl Default for PersonListEventData {
+    fn default() -> PersonListEventData {
+        PersonListEventData {
+            when: Unixtime(0),
+            public_len: 0,
+            private_len: None,
         }
     }
 }
@@ -74,17 +70,8 @@ pub struct People {
     // per gossip run (this set only grows)
     tried_metadata: DashSet<PublicKey>,
 
-    // Date of the last self-owned contact list we have an event for
-    pub last_contact_list_asof: AtomicI64,
-
-    // Size of the last self-owned contact list we have an event for
-    pub last_contact_list_size: AtomicUsize,
-
-    // Date of the last self-owned mute list we have an event for
-    pub last_mute_list_asof: AtomicI64,
-
-    // Size of the last self-owned mute list we have an event for
-    pub last_mute_list_size: AtomicUsize,
+    /// Latest person list event data for each PersonList
+    pub latest_person_list_event_data: DashMap<PersonList, PersonListEventData>,
 }
 
 impl Default for People {
@@ -103,67 +90,13 @@ impl People {
             recheck_nip05: DashSet::new(),
             need_metadata: DashSet::new(),
             tried_metadata: DashSet::new(),
-            last_contact_list_asof: AtomicI64::new(0),
-            last_contact_list_size: AtomicUsize::new(0),
-            last_mute_list_asof: AtomicI64::new(0),
-            last_mute_list_size: AtomicUsize::new(0),
+            latest_person_list_event_data: DashMap::new(),
         }
     }
 
     // Start the periodic task management
     pub(crate) fn start() {
-        if let Some(pk) = GLOBALS.signer.public_key() {
-            // Load our contact list from the database in order to populate
-            // last_contact_list_asof and last_contact_list_size
-            if let Ok(Some(event)) = GLOBALS
-                .storage
-                .get_replaceable_event(pk, EventKind::ContactList)
-            {
-                if event.created_at.0
-                    > GLOBALS
-                        .people
-                        .last_contact_list_asof
-                        .load(Ordering::Relaxed)
-                {
-                    GLOBALS
-                        .people
-                        .last_contact_list_asof
-                        .store(event.created_at.0, Ordering::Relaxed);
-                    let size = event
-                        .tags
-                        .iter()
-                        .filter(|t| matches!(t, Tag::Pubkey { .. }))
-                        .count();
-                    GLOBALS
-                        .people
-                        .last_contact_list_size
-                        .store(size, Ordering::Relaxed);
-                }
-            }
-
-            // Load our mute list from the database in order to populate
-            // last_mute_list_asof and last_mute_list_size
-            if let Ok(Some(event)) = GLOBALS
-                .storage
-                .get_replaceable_event(pk, EventKind::MuteList)
-            {
-                if event.created_at.0 > GLOBALS.people.last_mute_list_asof.load(Ordering::Relaxed) {
-                    GLOBALS
-                        .people
-                        .last_mute_list_asof
-                        .store(event.created_at.0, Ordering::Relaxed);
-                    let size = event
-                        .tags
-                        .iter()
-                        .filter(|t| matches!(t, Tag::Pubkey { .. }))
-                        .count();
-                    GLOBALS
-                        .people
-                        .last_mute_list_size
-                        .store(size, Ordering::Relaxed);
-                }
-            }
-        }
+        GLOBALS.people.update_latest_person_list_event_data();
 
         task::spawn(async {
             loop {
@@ -184,10 +117,58 @@ impl People {
         });
     }
 
-    /// Get all the pubkeys that the user follows
-    pub fn get_followed_pubkeys(&self) -> Vec<PublicKey> {
-        match GLOBALS.storage.get_people_in_list(PersonList::Followed) {
-            Ok(list) => list,
+    /// Search local events for the latest PersonList event for each kind of PersonList,
+    /// and determine their timestamps and lengths, storing result in People.
+    pub fn update_latest_person_list_event_data(&self) {
+        // Get public key, or give up
+        let pk = match GLOBALS.storage.read_setting_public_key() {
+            Some(pk) => pk,
+            None => return,
+        };
+
+        for (person_list, _) in PersonList::all_lists() {
+            if let Ok(Some(event)) = GLOBALS
+                .storage
+                .get_replaceable_event(pk, person_list.event_kind())
+            {
+                self.latest_person_list_event_data.insert(
+                    person_list,
+                    PersonListEventData {
+                        when: event.created_at,
+                        public_len: event
+                            .tags
+                            .iter()
+                            .filter(|t| matches!(t, Tag::Pubkey { .. }))
+                            .count(),
+                        private_len: {
+                            let mut private_len: Option<usize> = None;
+                            if !matches!(person_list, PersonList::Followed)
+                                && GLOBALS.signer.is_ready()
+                            {
+                                if let Ok(bytes) = GLOBALS.signer.decrypt_nip04(&pk, &event.content)
+                                {
+                                    if let Ok(vectags) = serde_json::from_slice::<Vec<Tag>>(&bytes)
+                                    {
+                                        private_len = Some(vectags.len());
+                                    }
+                                }
+                            }
+                            private_len
+                        },
+                    },
+                );
+            } else {
+                self.latest_person_list_event_data.remove(&person_list);
+            }
+        }
+    }
+
+    /// Get all the pubkeys that the user subscribes to in any list
+    pub fn get_subscribed_pubkeys(&self) -> Vec<PublicKey> {
+        // We subscribe to all people in all lists.
+        // This is no longer synonomous with the ContactList list
+        match GLOBALS.storage.get_people_in_all_followed_lists() {
+            Ok(people) => people,
             Err(e) => {
                 tracing::error!("{}", e);
                 vec![]
@@ -195,24 +176,17 @@ impl People {
         }
     }
 
-    /// Get all the pubkeys that the user mutes
-    pub fn get_muted_pubkeys(&self) -> Vec<PublicKey> {
-        match GLOBALS.storage.get_people_in_list(PersonList::Muted) {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::error!("{}", e);
-                vec![]
-            }
-        }
-    }
-
-    /// Is the given pubkey followed?
-    pub fn is_followed(&self, pubkey: &PublicKey) -> bool {
-        self.get_followed_pubkeys().contains(pubkey)
+    /// Is the person in the list? (returns false on error)
+    #[inline]
+    pub fn is_person_in_list(&self, pubkey: &PublicKey, list: PersonList) -> bool {
+        GLOBALS
+            .storage
+            .is_person_in_list(pubkey, list)
+            .unwrap_or(false)
     }
 
     /// Get all the pubkeys that need relay lists (from the given set)
-    pub fn get_followed_pubkeys_needing_relay_lists(
+    pub fn get_subscribed_pubkeys_needing_relay_lists(
         &self,
         among_these: &[PublicKey],
     ) -> Vec<PublicKey> {
@@ -550,16 +524,15 @@ impl People {
                 let mut result_name = String::from("");
 
                 // search for users by name
-                if let Some(name) = &person.tag_name() {
-                    let matchable = name.to_lowercase();
-                    if matchable.starts_with(&search) {
-                        score = 300;
-                        result_name = name.to_string();
-                    }
-                    if matchable.contains(&search) {
-                        score = 200;
-                        result_name = name.to_string();
-                    }
+                let name = person.best_name();
+                let matchable = name.to_lowercase();
+                if matchable.starts_with(&search) {
+                    score = 300;
+                    result_name = name.to_string();
+                }
+                if matchable.contains(&search) {
+                    score = 200;
+                    result_name = name.to_string();
                 }
 
                 // search for users by nip05 id
@@ -606,92 +579,103 @@ impl People {
             .collect())
     }
 
-    pub(crate) async fn generate_contact_list_event(&self) -> Result<Event, Error> {
-        let mut p_tags: Vec<Tag> = Vec::new();
-
-        let pubkeys = self.get_followed_pubkeys();
-
-        for pubkey in &pubkeys {
-            // Get their petname
-            let mut petname: Option<String> = None;
-            if let Some(person) = GLOBALS.storage.read_person(pubkey)? {
-                petname = person.petname.clone();
-            }
-
-            // Get their best relay
-            let relays = GLOBALS.storage.get_best_relays(*pubkey, Direction::Write)?;
-            let maybeurl = relays.get(0);
-            p_tags.push(Tag::Pubkey {
-                pubkey: (*pubkey).into(),
-                recommended_relay_url: maybeurl.map(|(u, _)| u.to_unchecked_url()),
-                petname,
-                trailing: Vec::new(),
-            });
+    pub(crate) async fn generate_person_list_event(
+        &self,
+        person_list: PersonList,
+    ) -> Result<Event, Error> {
+        if !GLOBALS.signer.is_ready() {
+            return Err((ErrorKind::NoPrivateKey, file!(), line!()).into());
         }
 
-        let public_key = match GLOBALS.signer.public_key() {
-            Some(pk) => pk,
-            None => return Err((ErrorKind::NoPrivateKey, file!(), line!()).into()), // not even a public key
-        };
+        let my_pubkey = GLOBALS.signer.public_key().unwrap();
 
-        // Get the content from our latest ContactList.
-        // We don't use the data, but we shouldn't clobber it.
-
-        let content = match GLOBALS
+        // Read the person list in two parts
+        let public_people = GLOBALS
             .storage
-            .get_replaceable_event(public_key, EventKind::ContactList)?
-        {
-            Some(c) => c.content,
-            None => "".to_owned(),
+            .get_people_in_list(person_list, Some(true))?;
+        let private_people = GLOBALS
+            .storage
+            .get_people_in_list(person_list, Some(false))?;
+
+        // Determine the event kind
+        let kind = match person_list {
+            PersonList::Followed => EventKind::ContactList,
+            PersonList::Muted => EventKind::MuteList,
+            PersonList::Custom(_) => EventKind::CategorizedPeopleList,
         };
 
-        let pre_event = PreEvent {
-            pubkey: public_key,
-            created_at: Unixtime::now().unwrap(),
-            kind: EventKind::ContactList,
-            tags: p_tags,
-            content,
-        };
+        // Build public p-tags
+        let mut tags: Vec<Tag> = Vec::new();
+        for pubkey in public_people.iter() {
+            // Only include petnames in the ContactList (which is only public people)
+            let petname = if kind == EventKind::ContactList {
+                if let Some(person) = GLOBALS.storage.read_person(pubkey)? {
+                    person.petname.clone()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
-        GLOBALS.signer.sign_preevent(pre_event, None, None)
-    }
+            // Only include recommended relay urls in public entries, and not in the mute list
+            let recommended_relay_url = if kind != EventKind::MuteList {
+                let relays = GLOBALS.storage.get_best_relays(*pubkey, Direction::Write)?;
+                relays.get(0).map(|(u, _)| u.to_unchecked_url())
+            } else {
+                None
+            };
 
-    pub(crate) async fn generate_mute_list_event(&self) -> Result<Event, Error> {
-        let mut p_tags: Vec<Tag> = Vec::new();
-
-        let muted_pubkeys = self.get_muted_pubkeys();
-
-        for muted_pubkey in &muted_pubkeys {
-            p_tags.push(Tag::Pubkey {
-                pubkey: (*muted_pubkey).into(),
-                recommended_relay_url: None,
-                petname: None,
+            tags.push(Tag::Pubkey {
+                pubkey: pubkey.into(),
+                recommended_relay_url,
+                petname,
                 trailing: vec![],
             });
         }
 
-        let public_key = match GLOBALS.signer.public_key() {
-            Some(pk) => pk,
-            None => return Err((ErrorKind::NoPrivateKey, file!(), line!()).into()), // not even a public key
-        };
+        // Add d-tag if using CategorizedPeopleList
+        if matches!(person_list, PersonList::Custom(_)) {
+            tags.push(Tag::Identifier {
+                d: person_list.name(),
+                trailing: vec![],
+            });
+        }
 
-        // Get the content from our latest MuteList.
-        // We don't use the data, but we shouldn't clobber it (it is for private mutes
-        // that we have not implemented yet)
-
-        let content = match GLOBALS
-            .storage
-            .get_replaceable_event(public_key, EventKind::MuteList)?
-        {
-            Some(c) => c.content,
-            None => "".to_owned(),
+        let content = {
+            if kind == EventKind::ContactList {
+                match GLOBALS
+                    .storage
+                    .get_replaceable_event(my_pubkey, EventKind::ContactList)?
+                {
+                    Some(c) => c.content,
+                    None => "".to_owned(),
+                }
+            } else {
+                // Build private p-tags (except for ContactList)
+                let mut private_p_tags: Vec<Tag> = Vec::new();
+                for pubkey in private_people.iter() {
+                    private_p_tags.push(Tag::Pubkey {
+                        pubkey: pubkey.into(),
+                        recommended_relay_url: None,
+                        petname: None,
+                        trailing: vec![],
+                    });
+                }
+                let private_tags_string = serde_json::to_string(&private_p_tags)?;
+                GLOBALS.signer.encrypt(
+                    &my_pubkey,
+                    &private_tags_string,
+                    ContentEncryptionAlgorithm::Nip04,
+                )?
+            }
         };
 
         let pre_event = PreEvent {
-            pubkey: public_key,
+            pubkey: my_pubkey,
             created_at: Unixtime::now().unwrap(),
-            kind: EventKind::MuteList,
-            tags: p_tags,
+            kind,
+            tags,
             content,
         };
 
@@ -699,13 +683,16 @@ impl People {
     }
 
     /// Follow (or unfollow) the public key
-    pub fn follow(&self, pubkey: &PublicKey, follow: bool) -> Result<(), Error> {
+    pub fn follow(&self, pubkey: &PublicKey, follow: bool, public: bool) -> Result<(), Error> {
         let mut txn = GLOBALS.storage.get_write_txn()?;
 
         if follow {
-            GLOBALS
-                .storage
-                .add_person_to_list(pubkey, PersonList::Followed, Some(&mut txn))?;
+            GLOBALS.storage.add_person_to_list(
+                pubkey,
+                PersonList::Followed,
+                public,
+                Some(&mut txn),
+            )?;
         } else {
             GLOBALS.storage.remove_person_from_list(
                 pubkey,
@@ -715,43 +702,13 @@ impl People {
         }
         GLOBALS.ui_people_to_invalidate.write().push(*pubkey);
 
-        GLOBALS
-            .storage
-            .write_last_contact_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
+        GLOBALS.storage.set_person_list_last_edit_time(
+            PersonList::Followed,
+            Unixtime::now().unwrap().0,
+            Some(&mut txn),
+        )?;
 
         txn.commit()?;
-
-        Ok(())
-    }
-
-    /// Follow all these public keys.
-    /// This does not publish any events.
-    pub(crate) fn follow_all(&self, pubkeys: &[PublicKey], merge: bool) -> Result<(), Error> {
-        let mut txn = GLOBALS.storage.get_write_txn()?;
-
-        if !merge {
-            GLOBALS
-                .storage
-                .clear_person_list(PersonList::Followed, Some(&mut txn))?;
-        }
-
-        for pubkey in pubkeys {
-            GLOBALS
-                .storage
-                .add_person_to_list(pubkey, PersonList::Followed, Some(&mut txn))?;
-            GLOBALS.ui_people_to_invalidate.write().push(*pubkey);
-        }
-
-        GLOBALS
-            .storage
-            .write_last_contact_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
-
-        txn.commit()?;
-
-        // Add the people to the relay_picker for picking
-        for pubkey in pubkeys.iter() {
-            GLOBALS.relay_picker.add_someone(pubkey.to_owned())?;
-        }
 
         Ok(())
     }
@@ -764,9 +721,11 @@ impl People {
         GLOBALS
             .storage
             .clear_person_list(PersonList::Followed, Some(&mut txn))?;
-        GLOBALS
-            .storage
-            .write_last_contact_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
+        GLOBALS.storage.set_person_list_last_edit_time(
+            PersonList::Followed,
+            Unixtime::now().unwrap().0,
+            Some(&mut txn),
+        )?;
 
         txn.commit()?;
 
@@ -783,9 +742,11 @@ impl People {
         GLOBALS
             .storage
             .clear_person_list(PersonList::Muted, Some(&mut txn))?;
-        GLOBALS
-            .storage
-            .write_last_mute_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
+        GLOBALS.storage.set_person_list_last_edit_time(
+            PersonList::Muted,
+            Unixtime::now().unwrap().0,
+            Some(&mut txn),
+        )?;
 
         txn.commit()?;
 
@@ -795,7 +756,7 @@ impl People {
     }
 
     /// Mute (or unmute) a public key
-    pub fn mute(&self, pubkey: &PublicKey, mute: bool) -> Result<(), Error> {
+    pub fn mute(&self, pubkey: &PublicKey, mute: bool, public: bool) -> Result<(), Error> {
         let mut txn = GLOBALS.storage.get_write_txn()?;
 
         if mute {
@@ -805,47 +766,27 @@ impl People {
                 }
             }
 
-            GLOBALS
-                .storage
-                .add_person_to_list(pubkey, PersonList::Muted, Some(&mut txn))?;
+            GLOBALS.storage.add_person_to_list(
+                pubkey,
+                PersonList::Muted,
+                public,
+                Some(&mut txn),
+            )?;
         } else {
             GLOBALS
                 .storage
                 .remove_person_from_list(pubkey, PersonList::Muted, Some(&mut txn))?;
         }
 
-        GLOBALS
-            .storage
-            .write_last_mute_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
+        GLOBALS.storage.set_person_list_last_edit_time(
+            PersonList::Muted,
+            Unixtime::now().unwrap().0,
+            Some(&mut txn),
+        )?;
 
         txn.commit()?;
 
         GLOBALS.ui_people_to_invalidate.write().push(*pubkey);
-
-        Ok(())
-    }
-
-    pub(crate) fn mute_all(&self, pubkeys: &[PublicKey], merge: bool) -> Result<(), Error> {
-        let mut txn = GLOBALS.storage.get_write_txn()?;
-
-        if !merge {
-            GLOBALS
-                .storage
-                .clear_person_list(PersonList::Muted, Some(&mut txn))?;
-        }
-
-        for pubkey in pubkeys {
-            GLOBALS
-                .storage
-                .add_person_to_list(pubkey, PersonList::Muted, Some(&mut txn))?;
-            GLOBALS.ui_people_to_invalidate.write().push(*pubkey);
-        }
-
-        GLOBALS
-            .storage
-            .write_last_mute_list_edit(Unixtime::now().unwrap().0, Some(&mut txn))?;
-
-        txn.commit()?;
 
         Ok(())
     }

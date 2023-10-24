@@ -36,13 +36,13 @@ use egui_video::{AudioDevice, Player};
 use egui_winit::egui::Response;
 use gossip_lib::comms::ToOverlordMessage;
 use gossip_lib::About;
-use gossip_lib::DmChannel;
 use gossip_lib::Error;
 use gossip_lib::FeedKind;
 use gossip_lib::Settings;
+use gossip_lib::{DmChannel, DmChannelData};
 use gossip_lib::{Person, PersonList};
 use gossip_lib::{ZapState, GLOBALS};
-use nostr_types::{Id, IdHex, Metadata, MilliSatoshi, Profile, PublicKey, UncheckedUrl, Url};
+use nostr_types::{Id, Metadata, MilliSatoshi, Profile, PublicKey, UncheckedUrl, Url};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "video-ffmpeg")]
 use std::rc::Rc;
@@ -56,7 +56,7 @@ use self::widgets::NavItem;
 use self::wizard::{WizardPage, WizardState};
 
 pub fn run() -> Result<(), Error> {
-    let icon_bytes = include_bytes!("../../../gossip.png");
+    let icon_bytes = include_bytes!("../../../logo/gossip.png");
     let icon = image::load_from_memory(icon_bytes)?.to_rgba8();
     let (icon_width, icon_height) = icon.dimensions();
 
@@ -82,6 +82,7 @@ pub fn run() -> Result<(), Error> {
         centered: true,
         vsync: true,
         follow_system_theme: GLOBALS.storage.read_setting_follow_os_dark_mode(),
+        min_window_size: Some(egui::vec2(800.0, 600.0)),
         ..Default::default()
     };
 
@@ -140,7 +141,7 @@ impl Page {
             Page::PeopleFollow => (SubMenu::People.to_str(), "Follow new".into()),
             Page::PeopleMuted => (SubMenu::People.to_str(), "Muted".into()),
             Page::Person(pk) => {
-                let name = gossip_lib::names::tag_name_from_pubkey_lookup(pk);
+                let name = gossip_lib::names::best_name_from_pubkey_lookup(pk);
                 ("Profile", name)
             }
             Page::YourKeys => (SubMenu::Account.to_str(), "Keys".into()),
@@ -424,6 +425,11 @@ struct GossipUi {
     note_being_zapped: Option<Id>,
 
     wizard_state: WizardState,
+
+    // Cached DM Channels
+    dm_channel_cache: Vec<DmChannelData>,
+    dm_channel_next_refresh: Instant,
+    dm_channel_error: Option<String>,
 }
 
 impl Drop for GossipUi {
@@ -481,7 +487,7 @@ impl GossipUi {
         submenu_ids.insert(SubMenu::Help, egui::Id::new(SubMenu::Help.to_id_str()));
 
         let icon_texture_handle = {
-            let bytes = include_bytes!("../../../gossip.png");
+            let bytes = include_bytes!("../../../logo/gossip.png");
             let image = image::load_from_memory(bytes).unwrap();
             let size = [image.width() as _, image.height() as _];
             let image_buffer = image.to_rgba8();
@@ -545,7 +551,7 @@ impl GossipUi {
             None => (false, dpi),
         };
 
-        let mut start_page = Page::Feed(FeedKind::Followed(false));
+        let mut start_page = Page::Feed(FeedKind::List(PersonList::Followed, false));
 
         // Possibly enter the wizard instead
         let mut wizard_state: WizardState = Default::default();
@@ -646,6 +652,9 @@ impl GossipUi {
             zap_state: ZapState::None,
             note_being_zapped: None,
             wizard_state,
+            dm_channel_cache: vec![],
+            dm_channel_next_refresh: Instant::now(),
+            dm_channel_error: None,
         }
     }
 
@@ -675,8 +684,8 @@ impl GossipUi {
     fn set_page_inner(&mut self, page: Page) {
         // Setting the page often requires some associated actions:
         match &page {
-            Page::Feed(FeedKind::Followed(with_replies)) => {
-                GLOBALS.feed.set_feed_to_followed(*with_replies);
+            Page::Feed(FeedKind::List(list, with_replies)) => {
+                GLOBALS.feed.set_feed_to_main(*list, *with_replies);
             }
             Page::Feed(FeedKind::Inbox(indirect)) => {
                 GLOBALS.feed.set_feed_to_inbox(*indirect);
@@ -727,14 +736,14 @@ impl GossipUi {
 
                 // cut indentation
                 ui.style_mut().spacing.indent = 0.0;
-                ui.style_mut().visuals.widgets.inactive.fg_stroke.color = self.theme.navigation_text_color();
-                ui.style_mut().visuals.widgets.hovered.fg_stroke.color = self.theme.navigation_text_hover_color();
-                ui.style_mut().visuals.widgets.hovered.fg_stroke.width = 1.0;
-                ui.style_mut().visuals.widgets.active.fg_stroke.color = self.theme.navigation_text_active_color();
+                ui.visuals_mut().widgets.inactive.fg_stroke.color = self.theme.navigation_text_color();
+                ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.navigation_text_hover_color();
+                ui.visuals_mut().widgets.hovered.fg_stroke.width = 1.0;
+                ui.visuals_mut().widgets.active.fg_stroke.color = self.theme.navigation_text_active_color();
 
                 ui.add_space(4.0);
                 let back_label_text = RichText::new("‹ Back");
-                let label = if self.history.is_empty() { Label::new(back_label_text.color(Color32::from_white_alpha(8))) } else { Label::new(back_label_text.color(self.theme.navigation_text_color())).sense(Sense::click()) };
+                let label = if self.history.is_empty() { Label::new(back_label_text.color(self.theme.navigation_text_deactivated_color())) } else { Label::new(back_label_text.color(self.theme.navigation_text_color())).sense(Sense::click()) };
                 let response = ui.add(label);
                 let response = if let Some(page) = self.history.last() {
                     response.on_hover_text(format!("back to {}", page.to_short_string()))
@@ -755,8 +764,8 @@ impl GossipUi {
                 ui.separator();
                 ui.add_space(4.0);
 
-                if self.add_selected_label(ui, matches!(self.page, Page::Feed(FeedKind::Followed(_))), "Main Feed").clicked() {
-                    self.set_page(Page::Feed(FeedKind::Followed(self.mainfeed_include_nonroot)));
+                if self.add_selected_label(ui, matches!(self.page, Page::Feed(FeedKind::List(PersonList::Followed, _))), "Main Feed").clicked() {
+                    self.set_page(Page::Feed(FeedKind::List(PersonList::Followed, self.mainfeed_include_nonroot)));
                 }
                 if let Some(pubkey) = GLOBALS.signer.public_key() {
                     if self.add_selected_label(ui, matches!(&self.page, Page::Feed(FeedKind::Person(key)) if *key == pubkey), "My Notes").clicked() {
@@ -766,7 +775,7 @@ impl GossipUi {
                         self.set_page(Page::Feed(FeedKind::Inbox(self.inbox_include_indirect)));
                     }
                 }
-                if GLOBALS.signer.public_key().is_some() {
+                if GLOBALS.signer.is_ready() {
                     if self.add_selected_label(ui, self.page == Page::DmChatList, "Private chats").clicked() {
                         self.set_page(Page::DmChatList);
                     }
@@ -889,7 +898,7 @@ impl GossipUi {
                             .shadow(egui::epaint::Shadow::NONE)
                             .show(ui, |ui| {
                                 let text = if GLOBALS.signer.is_ready() { RichText::new("+").size(22.5) } else { RichText::new("\u{1f513}").size(20.0) };
-                                let response = ui.add_sized([crate::AVATAR_SIZE_F32, crate::AVATAR_SIZE_F32], egui::Button::new(text.color(self.theme.navigation_text_color())).stroke(egui::Stroke::NONE).rounding(egui::Rounding::same(crate::AVATAR_SIZE_F32)).fill(self.theme.navigation_bg_fill()));
+                                let response = ui.add_sized([crate::AVATAR_SIZE_F32, crate::AVATAR_SIZE_F32], egui::Button::new(text.color(self.theme.get_style().visuals.panel_fill)).stroke(egui::Stroke::NONE).rounding(egui::Rounding::same(crate::AVATAR_SIZE_F32)).fill(self.theme.accent_color()));
                                 if response.clicked() {
                                     self.show_post_area = true;
                                     if GLOBALS.signer.is_ready() {
@@ -973,14 +982,24 @@ impl eframe::App for GossipUi {
             self.current_scroll_offset = requested_scroll;
         }
 
-        if self.theme.follow_os_dark_mode {
+        let mut reapply = false;
+        let mut theme = Theme::from_settings(&self.settings);
+        if theme.follow_os_dark_mode {
             // detect if the OS has changed dark/light mode
             let os_dark_mode = ctx.style().visuals.dark_mode;
-            if os_dark_mode != self.theme.dark_mode {
+            if os_dark_mode != theme.dark_mode {
                 // switch to the OS setting
-                self.theme.dark_mode = os_dark_mode;
-                theme::apply_theme(&self.theme, ctx);
+                self.settings.dark_mode = os_dark_mode;
+                theme.dark_mode = os_dark_mode;
+                reapply = true;
             }
+        }
+        if self.theme != theme {
+            self.theme = theme;
+            reapply = true;
+        }
+        if reapply {
+            theme::apply_theme(&self.theme, ctx);
         }
 
         // dialogues first
@@ -1061,12 +1080,28 @@ impl eframe::App for GossipUi {
         egui::CentralPanel::default()
             .frame({
                 let frame = egui::Frame::central_panel(&self.theme.get_style());
-                frame.inner_margin(egui::Margin {
-                    left: 20.0,
-                    right: 10.0,
-                    top: 10.0,
-                    bottom: 0.0,
-                })
+                frame
+                    .inner_margin(egui::Margin {
+                        left: 20.0,
+                        right: 10.0,
+                        top: 10.0,
+                        bottom: 0.0,
+                    })
+                    .fill({
+                        match self.page {
+                            Page::PeopleList
+                            | Page::PeopleFollow
+                            | Page::PeopleMuted
+                            | Page::Person(_) => {
+                                if self.theme.dark_mode {
+                                    ctx.style().visuals.panel_fill
+                                } else {
+                                    self.theme.main_content_bgcolor()
+                                }
+                            }
+                            _ => ctx.style().visuals.panel_fill,
+                        }
+                    })
             })
             .show(ctx, |ui| {
                 self.begin_ui(ui);
@@ -1097,10 +1132,29 @@ impl eframe::App for GossipUi {
 impl GossipUi {
     fn begin_ui(&self, ui: &mut Ui) {
         // if a dialog is open, disable the rest of the UI
-        ui.set_enabled(!relays::is_entry_dialog_active(self));
+        ui.set_enabled(!relays::is_entry_dialog_active(self) && self.person_qr.is_none());
     }
 
-    pub fn render_person_name_line(app: &mut GossipUi, ui: &mut Ui, person: &Person) {
+    pub fn person_name(person: &Person) -> String {
+        if let Some(petname) = &person.petname {
+            petname.clone()
+        } else if let Some(display_name) = person.display_name() {
+            display_name.to_string()
+        } else if let Some(name) = person.name() {
+            name.to_string()
+        } else if let Some(nip05) = person.nip05() {
+            nip05.to_string()
+        } else {
+            gossip_lib::names::pubkey_short(&person.pubkey)
+        }
+    }
+
+    pub fn render_person_name_line(
+        app: &mut GossipUi,
+        ui: &mut Ui,
+        person: &Person,
+        profile_page: bool,
+    ) {
         // Let the 'People' manager know that we are interested in displaying this person.
         // It will take all actions necessary to make the data eventually available.
         GLOBALS.people.person_of_interest(person.pubkey);
@@ -1115,16 +1169,22 @@ impl GossipUi {
             };
 
             let tag_name_menu = {
-                let text = match &person.petname {
-                    Some(pn) => pn.to_owned(),
-                    None => gossip_lib::names::tag_name_from_person(person),
+                let text = if !profile_page {
+                    match &person.petname {
+                        Some(pn) => pn.to_owned(),
+                        None => person.best_name(),
+                    }
+                } else {
+                    "ACTIONS".to_string()
                 };
                 RichText::new(format!("☰ {}", text))
             };
 
             ui.menu_button(tag_name_menu, |ui| {
-                if ui.button("View Person").clicked() {
-                    app.set_page(Page::Person(person.pubkey));
+                if !profile_page {
+                    if ui.button("View Person").clicked() {
+                        app.set_page(Page::Person(person.pubkey));
+                    }
                 }
                 if app.page != Page::Feed(FeedKind::Person(person.pubkey)) {
                     if ui.button("View Their Posts").clicked() {
@@ -1138,16 +1198,16 @@ impl GossipUi {
                     }
                 }
                 if !followed && ui.button("Follow").clicked() {
-                    let _ = GLOBALS.people.follow(&person.pubkey, true);
+                    let _ = GLOBALS.people.follow(&person.pubkey, true, true);
                 } else if followed && ui.button("Unfollow").clicked() {
-                    let _ = GLOBALS.people.follow(&person.pubkey, false);
+                    let _ = GLOBALS.people.follow(&person.pubkey, false, true);
                 }
 
                 // Do not show 'Mute' if this is yourself
                 if muted || !is_self {
                     let mute_label = if muted { "Unmute" } else { "Mute" };
                     if ui.button(mute_label).clicked() {
-                        let _ = GLOBALS.people.mute(&person.pubkey, !muted);
+                        let _ = GLOBALS.people.mute(&person.pubkey, !muted, true);
                         app.notes.cache_invalidate_person(&person.pubkey);
                     }
                 }
@@ -1183,23 +1243,25 @@ impl GossipUi {
                     .on_hover_text("followed");
             }
 
-            if let Some(mut nip05) = person.nip05().map(|s| s.to_owned()) {
-                if nip05.starts_with("_@") {
-                    nip05 = nip05.get(2..).unwrap().to_string();
-                }
+            if !profile_page {
+                if let Some(mut nip05) = person.nip05().map(|s| s.to_owned()) {
+                    if nip05.starts_with("_@") {
+                        nip05 = nip05.get(2..).unwrap().to_string();
+                    }
 
-                ui.with_layout(
-                    Layout::left_to_right(Align::Min)
-                        .with_cross_align(Align::Center)
-                        .with_cross_justify(true),
-                    |ui| {
-                        if person.nip05_valid {
-                            ui.label(RichText::new(nip05).monospace().small());
-                        } else {
-                            ui.label(RichText::new(nip05).monospace().small().strikethrough());
-                        }
-                    },
-                );
+                    ui.with_layout(
+                        Layout::left_to_right(Align::Min)
+                            .with_cross_align(Align::Center)
+                            .with_cross_justify(true),
+                        |ui| {
+                            if person.nip05_valid {
+                                ui.label(RichText::new(nip05).monospace().small());
+                            } else {
+                                ui.label(RichText::new(nip05).monospace().small().strikethrough());
+                            }
+                        },
+                    );
+                }
             }
         });
     }
@@ -1466,7 +1528,7 @@ impl GossipUi {
                 "VISIBLE = {:?}",
                 self.visible_note_ids
                     .iter()
-                    .map(|id| Into::<IdHex>::into(*id).prefix(10).into_string())
+                    .map(|id| id.as_hex_string().as_str().get(0..10).unwrap().to_owned())
                     .collect::<Vec<_>>()
             );
 

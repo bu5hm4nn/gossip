@@ -19,14 +19,15 @@ pub mod types;
 // database implementations
 mod event_ek_c_index1;
 mod event_ek_pk_index1;
-mod event_references_person1;
 mod event_seen_on_relay1;
+mod event_tag_index1;
 mod event_viewed1;
 mod events1;
 mod hashtags1;
 mod people1;
 mod people2;
 mod person_lists1;
+mod person_lists2;
 mod person_relays1;
 mod relationships1;
 mod relays1;
@@ -49,8 +50,10 @@ use nostr_types::{
 };
 use paste::paste;
 use speedy::{Readable, Writable};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound;
+
+use self::event_tag_index1::INDEXED_TAGS;
 
 // Macro to define read-and-write into "general" database, largely for settings
 // The type must implemented Speedy Readable and Writable
@@ -93,7 +96,7 @@ macro_rules! def_setting {
                 match self.general.get(&txn, $string) {
                     Err(_) => $default,
                     Ok(None) => $default,
-                    Ok(Some(bytes)) => match $type::read_from_buffer(bytes) {
+                    Ok(Some(bytes)) => match <$type>::read_from_buffer(bytes) {
                         Ok(val) => val,
                         Err(_) => $default,
                     }
@@ -132,7 +135,7 @@ impl Storage {
     pub(crate) fn new() -> Result<Storage, Error> {
         let mut builder = EnvOpenOptions::new();
         unsafe {
-            builder.flags(EnvFlags::NO_SYNC | EnvFlags::NO_TLS);
+            builder.flags(EnvFlags::NO_TLS);
         }
         // builder.max_readers(126); // this is the default
         builder.max_dbs(32);
@@ -178,7 +181,7 @@ impl Storage {
         // triggered into existence if their migration is necessary.
         let _ = self.db_event_ek_c_index()?;
         let _ = self.db_event_ek_pk_index()?;
-        let _ = self.db_event_references_person()?;
+        let _ = self.db_event_tag_index()?;
         let _ = self.db_events()?;
         let _ = self.db_event_seen_on_relay()?;
         let _ = self.db_event_viewed()?;
@@ -231,8 +234,8 @@ impl Storage {
     }
 
     #[inline]
-    pub(crate) fn db_event_references_person(&self) -> Result<RawDatabase, Error> {
-        self.db_event_references_person1()
+    pub(crate) fn db_event_tag_index(&self) -> Result<RawDatabase, Error> {
+        self.db_event_tag_index1()
     }
 
     #[inline]
@@ -282,7 +285,7 @@ impl Storage {
 
     #[inline]
     pub(crate) fn db_person_lists(&self) -> Result<RawDatabase, Error> {
-        self.db_person_lists1()
+        self.db_person_lists2()
     }
 
     // Database length functions ---------------------------------
@@ -335,10 +338,10 @@ impl Storage {
         Ok(self.db_event_ek_c_index()?.len(&txn)?)
     }
 
-    /// The number of records in the event_references_person index table
-    pub fn get_event_references_person_len(&self) -> Result<u64, Error> {
+    /// The number of records in the event_tag index table
+    pub fn get_event_tag_index_len(&self) -> Result<u64, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.db_event_references_person()?.len(&txn)?)
+        Ok(self.db_event_tag_index()?.len(&txn)?)
     }
 
     /// The number of records in the relationships table
@@ -535,17 +538,17 @@ impl Storage {
         }
     }
 
-    /// Write the user's last ContactList edit time
-    pub fn write_last_contact_list_edit<'a>(
+    /// Write the user's last PersonList edit times
+    pub fn write_person_lists_last_edit_times<'a>(
         &'a self,
-        when: i64,
+        times: HashMap<PersonList, i64>,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        let bytes = when.to_be_bytes();
+        let bytes = times.write_to_vec()?;
 
         let f = |txn: &mut RwTxn<'a>| -> Result<(), Error> {
             self.general
-                .put(txn, b"last_contact_list_edit", bytes.as_slice())?;
+                .put(txn, b"person_lists_last_edit_times", bytes.as_slice())?;
             Ok(())
         };
 
@@ -562,57 +565,32 @@ impl Storage {
     }
 
     /// Read the user's last ContactList edit time
-    pub fn read_last_contact_list_edit(&self) -> Result<i64, Error> {
+    pub fn read_person_lists_last_edit_times(&self) -> Result<HashMap<PersonList, i64>, Error> {
         let txn = self.env.read_txn()?;
 
-        match self.general.get(&txn, b"last_contact_list_edit")? {
-            None => {
-                let now = Unixtime::now().unwrap();
-                self.write_last_contact_list_edit(now.0, None)?;
-                Ok(now.0)
-            }
-            Some(bytes) => Ok(i64::from_be_bytes(bytes[..8].try_into().unwrap())),
+        match self.general.get(&txn, b"person_lists_last_edit_times")? {
+            None => Ok(HashMap::new()),
+            Some(bytes) => Ok(HashMap::<PersonList, i64>::read_from_buffer(bytes)?),
         }
     }
 
-    /// Write the user's last MuteList edit time
-    pub fn write_last_mute_list_edit<'a>(
+    /// Set a person list last edit time
+    pub fn set_person_list_last_edit_time<'a>(
         &'a self,
-        when: i64,
+        list: PersonList,
+        time: i64,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        let bytes = when.to_be_bytes();
-
-        let f = |txn: &mut RwTxn<'a>| -> Result<(), Error> {
-            self.general
-                .put(txn, b"last_mute_list_edit", bytes.as_slice())?;
-            Ok(())
-        };
-
-        match rw_txn {
-            Some(txn) => f(txn)?,
-            None => {
-                let mut txn = self.env.write_txn()?;
-                f(&mut txn)?;
-                txn.commit()?;
-            }
-        };
-
+        let mut lists = self.read_person_lists_last_edit_times()?;
+        let _ = lists.insert(list, time);
+        self.write_person_lists_last_edit_times(lists, rw_txn)?;
         Ok(())
     }
 
-    /// Read the user's last MuteList edit time
-    pub fn read_last_mute_list_edit(&self) -> Result<i64, Error> {
-        let txn = self.env.read_txn()?;
-
-        match self.general.get(&txn, b"last_mute_list_edit")? {
-            None => {
-                let now = Unixtime::now().unwrap();
-                self.write_last_mute_list_edit(now.0, None)?;
-                Ok(now.0)
-            }
-            Some(bytes) => Ok(i64::from_be_bytes(bytes[..8].try_into().unwrap())),
-        }
+    /// Get a person list last edit time
+    pub fn get_person_list_last_edit_time(&self, list: PersonList) -> Result<Option<i64>, Error> {
+        let lists = self.read_person_lists_last_edit_times()?;
+        Ok(lists.get(&list).copied())
     }
 
     /// Write a flag, whether the user is only following people with no account (or not)
@@ -720,6 +698,17 @@ impl Storage {
         60 * 60 * 24 * 30
     );
     def_setting!(overlap, b"overlap", u64, 300);
+    def_setting!(
+        custom_person_list_map,
+        b"custom_person_list_map",
+        BTreeMap::<u8, String>,
+        {
+            let mut m = BTreeMap::new();
+            m.insert(0, "Muted".to_owned());
+            m.insert(1, "Followed".to_owned());
+            m
+        }
+    );
     def_setting!(reposts, b"reposts", bool, true);
     def_setting!(show_long_form, b"show_long_form", bool, false);
     def_setting!(show_mentions, b"show_mentions", bool, true);
@@ -730,6 +719,7 @@ impl Storage {
         u64,
         60 * 15
     );
+    def_setting!(hide_mutes_entirely, b"hide_mutes_entirely", bool, false);
     def_setting!(reactions, b"reactions", bool, true);
     def_setting!(enable_zap_receipts, b"enable_zap_receipts", bool, true);
     def_setting!(show_media, b"show_media", bool, true);
@@ -1462,7 +1452,7 @@ impl Storage {
         }
 
         if sort {
-            events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            events.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
         }
 
         Ok(events)
@@ -1548,7 +1538,7 @@ impl Storage {
 
         events.sort_by(|a, b| {
             // ORDER created_at desc
-            b.created_at.cmp(&a.created_at)
+            b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id))
         });
 
         Ok(events)
@@ -1583,7 +1573,8 @@ impl Storage {
                 }
             }
 
-            let ek: u32 = event.kind.into();
+            // Index by the effective kind:
+            let ek: u32 = event.effective_kind().into();
             let mut key: Vec<u8> = ek.to_be_bytes().as_slice().to_owned(); // event kind
             key.extend(event.pubkey.as_bytes()); // pubkey
             let bytes = event.id.as_slice();
@@ -1633,7 +1624,8 @@ impl Storage {
                 }
             }
 
-            let ek: u32 = event.kind.into();
+            // Index by the effective kind:
+            let ek: u32 = event.effective_kind().into();
             let mut key: Vec<u8> = ek.to_be_bytes().as_slice().to_owned(); // event kind
             key.extend((i64::MAX - event.created_at.0).to_be_bytes().as_slice()); // reverse created_at
             let bytes = event.id.as_slice();
@@ -1654,28 +1646,66 @@ impl Storage {
         Ok(())
     }
 
-    // We don't call this externally. Whenever we write an event, we do this.
-    #[inline]
-    fn write_event_references_person<'a>(
+    fn write_event_tag_index<'a>(
         &'a self,
         event: &Event,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        self.write_event_references_person1(event, rw_txn)
+        self.write_event_tag_index1(event, rw_txn)
     }
 
-    /// Read all events referencing a given person in reverse time order
-    #[inline]
-    pub fn read_events_referencing_person<F>(
+    /// Find events having a given tag, and passing the filter.
+    /// Only some tags are indxed: "a", "d", "delegation", and "p" for the gossip user only
+    pub fn find_tagged_events<F>(
         &self,
-        pubkey: &PublicKey,
-        since: Unixtime,
+        tagname: &str,
+        tagvalue: Option<&str>,
         f: F,
+        sort: bool,
     ) -> Result<Vec<Event>, Error>
     where
         F: Fn(&Event) -> bool,
     {
-        self.read_events_referencing_person1(pubkey, since, f)
+        // Make sure we are asking for something that we have indexed
+        if !INDEXED_TAGS.contains(&tagname) {
+            return Err(ErrorKind::TagNotIndexed(tagname.to_owned()).into());
+        }
+
+        let mut ids: HashSet<Id> = HashSet::new();
+        let txn = self.env.read_txn()?;
+
+        let mut start_key: Vec<u8> = tagname.as_bytes().to_owned();
+        start_key.push(b'\"'); // double quote separator, unlikely to be inside of a tagname
+        if let Some(tv) = tagvalue {
+            start_key.extend(tv.as_bytes());
+        }
+        let start_key = key!(&start_key); // limit the size
+        let iter = self.db_event_tag_index()?.prefix_iter(&txn, start_key)?;
+        for result in iter {
+            let (_key, val) = result?;
+            // Take the event
+            let id = Id(val[0..32].try_into()?);
+            ids.insert(id);
+        }
+
+        // Now that we have that Ids, fetch and filter the events
+        let txn = self.env.read_txn()?;
+        let mut events: Vec<Event> = Vec::new();
+        for id in ids {
+            // this is like self.read_event(), but we supply our existing transaction
+            if let Some(bytes) = self.db_events()?.get(&txn, id.as_slice())? {
+                let event = Event::read_from_buffer(bytes)?;
+                if f(&event) {
+                    events.push(event);
+                }
+            }
+        }
+
+        if sort {
+            events.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        }
+
+        Ok(events)
     }
 
     #[inline]
@@ -1734,10 +1764,19 @@ impl Storage {
         // Whether or not the Gossip user already reacted to this event
         let mut self_already_reacted = false;
 
+        // Get the event (once self-reactions get deleted we can remove this)
+        let maybe_target_event = self.read_event(id)?;
+
         // Collect up to one reaction per pubkey
         let mut phase1: HashMap<PublicKey, char> = HashMap::new();
         for (_, rel) in self.find_relationships(id)? {
             if let Relationship::Reaction(pubkey, reaction) = rel {
+                if let Some(target_event) = &maybe_target_event {
+                    if target_event.pubkey == pubkey {
+                        // Do not let people like their own post
+                        continue;
+                    }
+                }
                 let symbol: char = if let Some(ch) = reaction.chars().next() {
                     ch
                 } else {
@@ -1777,9 +1816,19 @@ impl Storage {
 
     /// Get whether an event was deleted, and if so the optional reason
     pub fn get_deletion(&self, id: Id) -> Result<Option<String>, Error> {
-        for (_, rel) in self.find_relationships(id)? {
+        for (target_id, rel) in self.find_relationships(id)? {
             if let Relationship::Deletion(deletion) = rel {
-                return Ok(Some(deletion));
+                if let Some(delete_event) = self.read_event(id)? {
+                    if let Some(target_event) = self.read_event(target_id)? {
+                        // Only if the authors match
+                        if target_event.pubkey == delete_event.pubkey {
+                            return Ok(Some(deletion));
+                        }
+                    } else {
+                        // presume the authors will match for now
+                        return Ok(Some(deletion));
+                    }
+                }
             }
         }
         Ok(None)
@@ -1801,30 +1850,58 @@ impl Storage {
             }
 
             // reacts to
-            if let Some((id, reaction, _maybe_url)) = event.reacts_to() {
-                self.write_relationship(
-                    id,
-                    event.id,
-                    Relationship::Reaction(event.pubkey, reaction),
-                    Some(txn),
-                )?;
-
-                invalidate.push(id);
+            if let Some((reacted_to_id, reaction, _maybe_url)) = event.reacts_to() {
+                if let Some(reacted_to_event) = self.read_event(reacted_to_id)? {
+                    // Only if they are different people (no liking your own posts)
+                    if reacted_to_event.pubkey != event.pubkey {
+                        self.write_relationship(
+                            reacted_to_id, // event reacted to
+                            event.id,      // the reaction event id
+                            Relationship::Reaction(event.pubkey, reaction),
+                            Some(txn),
+                        )?;
+                    }
+                    invalidate.push(reacted_to_id);
+                } else {
+                    // Store the reaction to the event we dont have yet.
+                    // We filter bad ones when reading them back too, so even if this
+                    // turns out to be a reaction by the author, they can't like
+                    // their own post
+                    self.write_relationship(
+                        reacted_to_id, // event reacted to
+                        event.id,      // the reaction event id
+                        Relationship::Reaction(event.pubkey, reaction),
+                        Some(txn),
+                    )?;
+                    invalidate.push(reacted_to_id);
+                }
             }
 
             // deletes
-            if let Some((ids, reason)) = event.deletes() {
-                invalidate.extend(&ids);
-
-                for id in ids {
+            if let Some((deleted_event_ids, reason)) = event.deletes() {
+                invalidate.extend(&deleted_event_ids);
+                for deleted_event_id in deleted_event_ids {
                     // since it is a delete, we don't actually desire the event.
-
-                    self.write_relationship(
-                        id,
-                        event.id,
-                        Relationship::Deletion(reason.clone()),
-                        Some(txn),
-                    )?;
+                    if let Some(deleted_event) = self.read_event(deleted_event_id)? {
+                        // Only if it is the same author
+                        if deleted_event.pubkey == event.pubkey {
+                            self.write_relationship(
+                                deleted_event_id,
+                                event.id,
+                                Relationship::Deletion(reason.clone()),
+                                Some(txn),
+                            )?;
+                        }
+                    } else {
+                        // We don't have the deleted event. Presume it is okay. We check again
+                        // when we read these back
+                        self.write_relationship(
+                            deleted_event_id,
+                            event.id,
+                            Relationship::Deletion(reason.clone()),
+                            Some(txn),
+                        )?;
+                    }
                 }
             }
 
@@ -2030,7 +2107,7 @@ impl Storage {
         let events = self.find_events(
             &[EventKind::EncryptedDirectMessage, EventKind::GiftWrap],
             &[],
-            Some(Unixtime(0)),
+            None,
             |event| {
                 if event.kind == EventKind::EncryptedDirectMessage {
                     event.pubkey == my_pubkey || event.is_tagged(&my_pubkey)
@@ -2047,25 +2124,37 @@ impl Storage {
         let mut map: HashMap<DmChannel, DmChannelData> = HashMap::new();
 
         for event in &events {
-            let unread = 1 - self.is_event_viewed(event.id)? as usize;
+            let unread: usize = if event.pubkey == my_pubkey {
+                // Do not count self-authored events as unread, irrespective of whether they are viewed
+                0
+            } else {
+                1 - self.is_event_viewed(event.id)? as usize
+            };
             if event.kind == EventKind::EncryptedDirectMessage {
                 let time = event.created_at;
                 let dmchannel = match DmChannel::from_event(event, Some(my_pubkey)) {
                     Some(dmc) => dmc,
                     None => continue,
                 };
-                map.entry(dmchannel.clone())
-                    .and_modify(|d| {
-                        d.latest_message = d.latest_message.max(time);
-                        d.message_count += 1;
-                        d.unread_message_count += unread;
-                    })
-                    .or_insert(DmChannelData {
-                        dm_channel: dmchannel,
-                        latest_message: time,
-                        message_count: 1,
-                        unread_message_count: unread,
-                    });
+                if let Some(dmcdata) = map.get_mut(&dmchannel) {
+                    if time > dmcdata.latest_message_created_at {
+                        dmcdata.latest_message_created_at = time;
+                        dmcdata.latest_message_content = GLOBALS.signer.decrypt_message(event).ok();
+                    }
+                    dmcdata.message_count += 1;
+                    dmcdata.unread_message_count += unread;
+                } else {
+                    map.insert(
+                        dmchannel.clone(),
+                        DmChannelData {
+                            dm_channel: dmchannel,
+                            latest_message_created_at: time,
+                            latest_message_content: GLOBALS.signer.decrypt_message(event).ok(),
+                            message_count: 1,
+                            unread_message_count: unread,
+                        },
+                    );
+                }
             } else if event.kind == EventKind::GiftWrap {
                 if let Ok(rumor) = GLOBALS.signer.unwrap_giftwrap(event) {
                     let rumor_event = rumor.into_event_with_bad_signature();
@@ -2074,24 +2163,35 @@ impl Storage {
                         Some(dmc) => dmc,
                         None => continue,
                     };
-                    map.entry(dmchannel.clone())
-                        .and_modify(|d| {
-                            d.latest_message = d.latest_message.max(time);
-                            d.message_count += 1;
-                            d.unread_message_count += unread;
-                        })
-                        .or_insert(DmChannelData {
-                            dm_channel: dmchannel,
-                            latest_message: time,
-                            message_count: 1,
-                            unread_message_count: unread,
-                        });
+                    if let Some(dmcdata) = map.get_mut(&dmchannel) {
+                        if time > dmcdata.latest_message_created_at {
+                            dmcdata.latest_message_created_at = time;
+                            dmcdata.latest_message_content = Some(rumor_event.content.clone());
+                        }
+                        dmcdata.message_count += 1;
+                        dmcdata.unread_message_count += unread;
+                    } else {
+                        map.insert(
+                            dmchannel.clone(),
+                            DmChannelData {
+                                dm_channel: dmchannel,
+                                latest_message_created_at: time,
+                                latest_message_content: Some(rumor_event.content.clone()),
+                                message_count: 1,
+                                unread_message_count: unread,
+                            },
+                        );
+                    }
                 }
             }
         }
 
         let mut output: Vec<DmChannelData> = map.drain().map(|e| e.1).collect();
-        output.sort_by(|a, b| b.latest_message.cmp(&a.latest_message));
+        output.sort_by(|a, b| {
+            b.latest_message_created_at
+                .cmp(&a.latest_message_created_at)
+                .then(b.unread_message_count.cmp(&a.unread_message_count))
+        });
         Ok(output)
     }
 
@@ -2118,7 +2218,7 @@ impl Storage {
         )?;
 
         // sort
-        output.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        output.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
 
         Ok(output.iter().map(|e| e.id).collect())
     }
@@ -2133,7 +2233,7 @@ impl Storage {
             // Erase all indices first
             self.db_event_ek_pk_index()?.clear(txn)?;
             self.db_event_ek_c_index()?.clear(txn)?;
-            self.db_event_references_person()?.clear(txn)?;
+            self.db_event_tag_index()?.clear(txn)?;
             self.db_hashtags()?.clear(txn)?;
 
             let loop_txn = self.env.read_txn()?;
@@ -2142,7 +2242,7 @@ impl Storage {
                 let event = Event::read_from_buffer(val)?;
                 self.write_event_ek_pk_index(&event, Some(txn))?;
                 self.write_event_ek_c_index(&event, Some(txn))?;
-                self.write_event_references_person(&event, Some(txn))?;
+                self.write_event_tag_index(&event, Some(txn))?;
                 for hashtag in event.hashtags() {
                     if hashtag.is_empty() {
                         continue;
@@ -2167,24 +2267,66 @@ impl Storage {
         Ok(())
     }
 
+    pub fn rebuild_event_tags_index<'a>(
+        &'a self,
+        rw_txn: Option<&mut RwTxn<'a>>,
+    ) -> Result<(), Error> {
+        let f = |txn: &mut RwTxn<'a>| -> Result<(), Error> {
+            // Erase the index first
+            self.db_event_tag_index()?.clear(txn)?;
+
+            let loop_txn = self.env.read_txn()?;
+            for result in self.db_events()?.iter(&loop_txn)? {
+                let (_key, val) = result?;
+                let event = Event::read_from_buffer(val)?;
+                self.write_event_tag_index(&event, Some(txn))?;
+            }
+            Ok(())
+        };
+
+        match rw_txn {
+            Some(txn) => {
+                f(txn)?;
+            }
+            None => {
+                let mut txn = self.env.write_txn()?;
+                f(&mut txn)?;
+                txn.commit()?;
+            }
+        };
+
+        Ok(())
+    }
+
     /// Read person lists
-    pub fn read_person_lists(&self, pubkey: &PublicKey) -> Result<Vec<PersonList>, Error> {
-        self.read_person_lists1(pubkey)
+    pub fn read_person_lists(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<HashMap<PersonList, bool>, Error> {
+        self.read_person_lists2(pubkey)
     }
 
     /// Write person lists
     pub fn write_person_lists<'a>(
         &'a self,
         pubkey: &PublicKey,
-        lists: Vec<PersonList>,
+        lists: HashMap<PersonList, bool>,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        self.write_person_lists1(pubkey, lists, rw_txn)
+        self.write_person_lists2(pubkey, lists, rw_txn)
     }
 
     /// Get people in a person list
-    pub fn get_people_in_list(&self, list: PersonList) -> Result<Vec<PublicKey>, Error> {
-        self.get_people_in_list1(list)
+    pub fn get_people_in_list(
+        &self,
+        list: PersonList,
+        public: Option<bool>,
+    ) -> Result<Vec<PublicKey>, Error> {
+        self.get_people_in_list2(list, public)
+    }
+
+    pub fn get_people_in_all_followed_lists(&self) -> Result<Vec<PublicKey>, Error> {
+        self.get_people_in_all_followed_lists2()
     }
 
     /// Empty a person list
@@ -2194,13 +2336,19 @@ impl Storage {
         list: PersonList,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        self.clear_person_list1(list, rw_txn)
+        self.clear_person_list2(list, rw_txn)
     }
 
     /// Is a person in a list?
     pub fn is_person_in_list(&self, pubkey: &PublicKey, list: PersonList) -> Result<bool, Error> {
-        let lists = self.read_person_lists(pubkey)?;
-        Ok(lists.contains(&list))
+        let map = self.read_person_lists(pubkey)?;
+        Ok(map.contains_key(&list))
+    }
+
+    /// Is the person in any list we subscribe to?
+    pub fn is_person_subscribed_to(&self, pubkey: &PublicKey) -> Result<bool, Error> {
+        let map = self.read_person_lists(pubkey)?;
+        Ok(map.iter().any(|l| l.0.subscribe()))
     }
 
     /// Add a person to a list
@@ -2208,13 +2356,12 @@ impl Storage {
         &'a self,
         pubkey: &PublicKey,
         list: PersonList,
+        public: bool,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        let mut lists = self.read_person_lists(pubkey)?;
-        if !lists.iter().any(|s| *s == list) {
-            lists.push(list.to_owned());
-        }
-        self.write_person_lists(pubkey, lists, rw_txn)
+        let mut map = self.read_person_lists(pubkey)?;
+        map.insert(list, public);
+        self.write_person_lists(pubkey, map, rw_txn)
     }
 
     /// Remove a person from a list
@@ -2224,8 +2371,8 @@ impl Storage {
         list: PersonList,
         rw_txn: Option<&mut RwTxn<'a>>,
     ) -> Result<(), Error> {
-        let mut lists = self.read_person_lists(pubkey)?;
-        let lists: Vec<PersonList> = lists.drain(..).filter(|s| *s != list).collect();
-        self.write_person_lists(pubkey, lists, rw_txn)
+        let mut map = self.read_person_lists(pubkey)?;
+        map.remove(&list);
+        self.write_person_lists(pubkey, map, rw_txn)
     }
 }

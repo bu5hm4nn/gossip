@@ -3,7 +3,8 @@ use std::sync::mpsc::Sender;
 use crate::error::{Error, ErrorKind};
 use crate::globals::GLOBALS;
 use nostr_types::{
-    EncryptedPrivateKey, Event, EventKind, Id, KeySecurity, PreEvent, PrivateKey, PublicKey, Rumor,
+    ContentEncryptionAlgorithm, EncryptedPrivateKey, Event, EventKind, Id, KeySecurity, PreEvent,
+    PrivateKey, PublicKey, Rumor,
 };
 use parking_lot::RwLock;
 use tokio::task;
@@ -48,6 +49,13 @@ impl Signer {
                 .write("Ignored setting of public key (private key supercedes)".to_string());
         } else {
             *self.public.write() = Some(pk);
+
+            // Reubild the event tag index, since the 'p' tags it need to index just changed.
+            task::spawn(async move {
+                if let Err(e) = GLOBALS.storage.rebuild_event_tags_index(None) {
+                    tracing::error!("{}", e);
+                }
+            });
         }
     }
 
@@ -71,6 +79,13 @@ impl Signer {
         } else {
             *self.encrypted.write() = Some(epk);
         }
+
+        // Reubild the event tag index, since the 'p' tags it need to index just changed.
+        task::spawn(async move {
+            if let Err(e) = GLOBALS.storage.rebuild_event_tags_index(None) {
+                tracing::error!("{}", e);
+            }
+        });
     }
 
     pub(crate) fn set_private_key(&self, pk: PrivateKey, pass: &str) -> Result<(), Error> {
@@ -78,6 +93,14 @@ impl Signer {
             Some(pk.export_encrypted(pass, GLOBALS.storage.read_setting_log_n())?);
         *self.public.write() = Some(pk.public_key());
         *self.private.write() = Some(pk);
+
+        // Reubild the event tag index, since the 'p' tags it need to index just changed.
+        task::spawn(async move {
+            if let Err(e) = GLOBALS.storage.rebuild_event_tags_index(None) {
+                tracing::error!("{}", e);
+            }
+        });
+
         Ok(())
     }
 
@@ -168,6 +191,11 @@ impl Signer {
             if let Err(e) = GLOBALS.signer.save().await {
                 tracing::error!("{}", e);
             }
+
+            // Reubild the event tag index, since the 'p' tags it need to index just changed.
+            if let Err(e) = GLOBALS.storage.rebuild_event_tags_index(None) {
+                tracing::error!("{}", e);
+            }
         });
 
         Ok(())
@@ -212,17 +240,6 @@ impl Signer {
                 Some(pow) => Ok(Event::new_with_pow(preevent, pk, pow, work_sender)?),
                 None => Ok(Event::new(preevent, pk)?),
             },
-            _ => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
-        }
-    }
-
-    pub(crate) fn new_nip04(
-        &self,
-        recipient_public_key: PublicKey,
-        message: &str,
-    ) -> Result<PreEvent, Error> {
-        match &*self.private.read() {
-            Some(pk) => Ok(PreEvent::new_nip04(pk, recipient_public_key, message)?),
             _ => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
         }
     }
@@ -302,21 +319,37 @@ impl Signer {
     /// Unwrap a giftwrap event
     pub fn unwrap_giftwrap(&self, event: &Event) -> Result<Rumor, Error> {
         match &*self.private.read() {
-            Some(private) => Ok(event.giftwrap_unwrap(private, false)?),
+            Some(private) => Ok(event.giftwrap_unwrap(private)?),
             _ => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
         }
     }
 
-    /// Decrypt a NIP-44 event (version 1)
-    pub fn nip44_decrypt(
+    /// Encrypt content
+    pub fn encrypt(
         &self,
         other: &PublicKey,
-        ciphertext: &str,
-        padded: bool,
-    ) -> Result<Vec<u8>, Error> {
+        plaintext: &str,
+        algo: ContentEncryptionAlgorithm,
+    ) -> Result<String, Error> {
         match &*self.private.read() {
-            Some(private) => Ok(private.nip44_decrypt(other, ciphertext, padded)?),
-            _ => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
+            Some(private) => Ok(private.encrypt(other, plaintext, algo)?),
+            None => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
+        }
+    }
+
+    /// Decrypt NIP-04 content
+    pub fn decrypt_nip04(&self, other: &PublicKey, ciphertext: &str) -> Result<Vec<u8>, Error> {
+        match &*self.private.read() {
+            Some(private) => Ok(private.decrypt_nip04(other, ciphertext)?),
+            None => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
+        }
+    }
+
+    /// Decrypt NIP-44 content
+    pub fn decrypt_nip44(&self, other: &PublicKey, ciphertext: &str) -> Result<String, Error> {
+        match &*self.private.read() {
+            Some(private) => Ok(private.decrypt_nip44(other, ciphertext)?),
+            None => Err((ErrorKind::NoPrivateKey, file!(), line!()).into()),
         }
     }
 }

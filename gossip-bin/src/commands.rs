@@ -51,8 +51,8 @@ const COMMANDS: [Command; 23] = [
     },
     Command {
         cmd: "decrypt",
-        usage_params: "<pubkeyhex> <ciphertext> <padded?>",
-        desc: "decrypt the ciphertext from the pubkeyhex. padded=0 to not expect padding.",
+        usage_params: "<pubkeyhex> <ciphertext>",
+        desc: "decrypt the ciphertext from the pubkeyhex.",
     },
     Command {
         cmd: "events_of_kind",
@@ -360,15 +360,9 @@ pub fn decrypt(cmd: Command, mut args: env::Args) -> Result<(), Error> {
         None => return cmd.usage("Missing ciphertext parameter".to_string()),
     };
 
-    let padded = match args.next() {
-        Some(padded) => padded == "1",
-        None => return cmd.usage("Missing padded parameter".to_string()),
-    };
-
     login(cmd)?;
 
-    let plaintext_bytes = GLOBALS.signer.nip44_decrypt(&pubkey, &ciphertext, padded)?;
-    let plaintext = String::from_utf8_lossy(&plaintext_bytes);
+    let plaintext = GLOBALS.signer.decrypt_nip44(&pubkey, &ciphertext)?;
     println!("{}", plaintext);
 
     Ok(())
@@ -438,7 +432,9 @@ pub fn print_relays(_cmd: Command) -> Result<(), Error> {
 }
 
 pub fn print_followed(_cmd: Command) -> Result<(), Error> {
-    let pubkeys = GLOBALS.storage.get_people_in_list(PersonList::Followed)?;
+    let pubkeys = GLOBALS
+        .storage
+        .get_people_in_list(PersonList::Followed, None)?;
     for pk in &pubkeys {
         println!("{}", pk.as_hex_string());
     }
@@ -446,7 +442,9 @@ pub fn print_followed(_cmd: Command) -> Result<(), Error> {
 }
 
 pub fn print_muted(_cmd: Command) -> Result<(), Error> {
-    let pubkeys = GLOBALS.storage.get_people_in_list(PersonList::Muted)?;
+    let pubkeys = GLOBALS
+        .storage
+        .get_people_in_list(PersonList::Muted, None)?;
     for pk in &pubkeys {
         println!("{}", pk.as_hex_string());
     }

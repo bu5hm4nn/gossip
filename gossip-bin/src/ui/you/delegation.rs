@@ -6,7 +6,12 @@ use gossip_lib::GLOBALS;
 use tokio::task;
 
 pub(super) fn update(app: &mut GossipUi, _ctx: &Context, _frame: &mut eframe::Frame, ui: &mut Ui) {
-    ui.heading("Delegatee");
+    ui.add_space(10.0);
+    ui.horizontal_wrapped(|ui| {
+        // ui.add_space(2.0);
+        ui.heading("Delegatee");
+    });
+    ui.add_space(10.0);
     ui.label("If NIP-26 Delegation is set, I will post on behalf of the delegator");
     ui.add_space(24.0);
 
@@ -24,7 +29,7 @@ pub(super) fn update(app: &mut GossipUi, _ctx: &Context, _frame: &mut eframe::Fr
                     .unwrap_or("(not set)".to_string());
                 ui.label(&delegator_npub);
                 if ui
-                    .add(CopyButton {})
+                    .add(CopyButton::new())
                     .on_hover_text("Copy Public Key")
                     .clicked()
                 {

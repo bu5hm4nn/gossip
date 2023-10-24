@@ -27,7 +27,7 @@ impl DmChannel {
     pub fn name(&self) -> String {
         if self.0.is_empty() {
             return match GLOBALS.signer.public_key() {
-                Some(pk) => crate::names::tag_name_from_pubkey_lookup(&pk),
+                Some(pk) => crate::names::best_name_from_pubkey_lookup(&pk),
                 None => "[NOBODY]".to_string(),
             };
         }
@@ -41,7 +41,7 @@ impl DmChannel {
                 output.push_str(", ");
             }
 
-            let name = crate::names::tag_name_from_pubkey_lookup(pubkey);
+            let name = crate::names::best_name_from_pubkey_lookup(pubkey);
             output.push_str(&name);
         }
         output
@@ -112,7 +112,8 @@ impl DmChannel {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DmChannelData {
     pub dm_channel: DmChannel,
-    pub latest_message: Unixtime,
+    pub latest_message_created_at: Unixtime,
+    pub latest_message_content: Option<String>,
     pub message_count: usize,
     pub unread_message_count: usize,
 }

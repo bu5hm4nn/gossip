@@ -68,7 +68,7 @@ pub(super) fn render_note(
         // FIXME drop the cached notes on recompute
 
         if let Ok(note_data) = note_ref.try_borrow() {
-            let skip = (note_data.muted()
+            let skip = ((note_data.muted() && app.settings.hide_mutes_entirely)
                 && !matches!(app.page, Page::Feed(FeedKind::DmChat(_)))
                 && !matches!(app.page, Page::Feed(FeedKind::Person(_))))
                 || (note_data.deletion.is_some() && !app.settings.show_deleted_events);
@@ -203,7 +203,10 @@ fn render_note_inner(
         let collapsed = app.collapsed.contains(&note.event.id);
 
         // Load avatar texture
-        let avatar = if let Some(avatar) = app.try_get_avatar(ctx, &note.author.pubkey) {
+        let avatar = if note.muted() {
+            // no avatars for muted people
+            app.placeholder_avatar.clone()
+        } else if let Some(avatar) = app.try_get_avatar(ctx, &note.author.pubkey) {
             avatar
         } else {
             app.placeholder_avatar.clone()
@@ -284,7 +287,7 @@ fn render_note_inner(
 
                 ui.add_space(3.0);
 
-                GossipUi::render_person_name_line(app, ui, &note.author);
+                GossipUi::render_person_name_line(app, ui, &note.author, false);
 
                 ui.horizontal_wrapped(|ui| {
                     if let Some((irt, _)) = note.event.replies_to() {
@@ -306,30 +309,51 @@ fn render_note_inner(
                     ui.add_space(8.0);
 
                     if note.event.pow() > 0 {
-                        ui.label(format!("POW={}", note.event.pow()));
+                        let color = app.theme.notice_marker_text_color();
+                        ui.label(
+                            RichText::new(format!("POW={}", note.event.pow()))
+                                .color(color)
+                                .text_style(TextStyle::Small),
+                        );
                     }
 
                     match &note.delegation {
                         EventDelegation::InvalidDelegation(why) => {
                             let color = app.theme.warning_marker_text_color();
-                            ui.add(Label::new(RichText::new("INVALID DELEGATION").color(color)))
-                                .on_hover_text(why);
+                            ui.add(Label::new(
+                                RichText::new("INVALID DELEGATION")
+                                    .color(color)
+                                    .text_style(TextStyle::Small),
+                            ))
+                            .on_hover_text(why);
                         }
                         EventDelegation::DelegatedBy(_) => {
                             let color = app.theme.notice_marker_text_color();
-                            ui.label(RichText::new("DELEGATED").color(color));
+                            ui.label(
+                                RichText::new("DELEGATED")
+                                    .color(color)
+                                    .text_style(TextStyle::Small),
+                            );
                         }
                         _ => {}
                     }
 
                     if note.deletion.is_some() {
                         let color = app.theme.warning_marker_text_color();
-                        ui.label(RichText::new("DELETED").color(color));
+                        ui.label(
+                            RichText::new("DELETED")
+                                .color(color)
+                                .text_style(TextStyle::Small),
+                        );
                     }
 
                     if note.event.kind == EventKind::Repost {
                         let color = app.theme.notice_marker_text_color();
-                        ui.label(RichText::new("REPOSTED").color(color));
+                        ui.label(
+                            RichText::new("REPOSTED")
+                                .color(color)
+                                .text_style(TextStyle::Small),
+                        );
                     }
 
                     if let Page::Feed(FeedKind::DmChat(_)) = app.page {
@@ -338,9 +362,17 @@ fn render_note_inner(
                         if note.event.kind.is_direct_message_related() {
                             let color = app.theme.notice_marker_text_color();
                             if note.secure {
-                                ui.label(RichText::new("Private Chat (Gift Wrapped)").color(color));
+                                ui.label(
+                                    RichText::new("PRIVATE CHAT (GIFT WRAPPED)")
+                                        .color(color)
+                                        .text_style(TextStyle::Small),
+                                );
                             } else {
-                                ui.label(RichText::new("Private Chat").color(color));
+                                ui.label(
+                                    RichText::new("PRIVATE CHAT")
+                                        .color(color)
+                                        .text_style(TextStyle::Small),
+                                );
                             }
                         }
                     }
@@ -615,7 +647,7 @@ fn render_note_inner(
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 if ui
-                                    .add(CopyButton {})
+                                    .add(CopyButton::new())
                                     .on_hover_text("Copy Contents")
                                     .clicked()
                                 {
@@ -784,7 +816,7 @@ fn render_note_inner(
                                     }
                                 }
 
-                                if app.settings.enable_zap_receipts {
+                                if app.settings.enable_zap_receipts && !note.muted() {
                                     ui.add_space(24.0);
 
                                     // To zap, the user must have a lnurl, and the event must have been
@@ -847,7 +879,7 @@ fn render_note_inner(
                                 ui.add_space(24.0);
 
                                 // Buttons to react and reaction counts
-                                if app.settings.reactions {
+                                if app.settings.reactions && !note.muted() {
                                     let default_reaction_icon = match note.self_already_reacted {
                                         true => "♥",
                                         false => "♡",
@@ -897,7 +929,7 @@ fn render_note_inner(
                                         app.render_zap_area(ui, ctx);
                                     });
                                     if ui
-                                        .add(CopyButton {})
+                                        .add(CopyButton::new())
                                         .on_hover_text("Copy Invoice")
                                         .clicked()
                                     {
@@ -966,6 +998,13 @@ fn render_content(
                 ui.horizontal_wrapped(|ui| {
                     if app.render_raw == Some(event.id) {
                         ui.label(serde_json::to_string_pretty(&event).unwrap());
+                    } else if note.muted() {
+                        let color = app.theme.notice_marker_text_color();
+                        ui.label(
+                            RichText::new("MUTED")
+                                .color(color)
+                                .text_style(TextStyle::Small),
+                        );
                     } else if app.render_qr == Some(event.id) {
                         app.render_qr(ui, ctx, "feedqr", event.content.trim());
                     // FIXME should this be the unmodified content (event.content)?

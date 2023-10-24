@@ -4,19 +4,13 @@ use eframe::egui::{
     Color32, Context, FontData, FontDefinitions, FontTweak, Margin, Rounding, Stroke, Style,
     TextFormat, TextStyle, Ui,
 };
-use eframe::epaint::{FontFamily, FontId, Shadow};
+use eframe::epaint::{ecolor, FontFamily, FontId, Shadow};
 use gossip_lib::Settings;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-mod classic;
-pub use classic::ClassicTheme;
-
 mod default;
 pub use default::DefaultTheme;
-
-mod roundy;
-pub use roundy::RoundyTheme;
 
 pub fn apply_theme(theme: &Theme, ctx: &Context) {
     ctx.set_style(theme.get_style());
@@ -29,9 +23,7 @@ pub fn apply_theme(theme: &Theme, ctx: &Context) {
 // note: if we store anything inside the variants, we can't use macro_rules.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeVariant {
-    Classic,
     Default,
-    Roundy,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,9 +37,7 @@ impl Theme {
     pub fn from_settings(settings: &Settings) -> Theme {
         Theme {
             variant: match &*settings.theme_variant {
-                "Classic" => ThemeVariant::Classic,
                 "Default" => ThemeVariant::Default,
-                "Roundy" => ThemeVariant::Roundy,
                 _ => ThemeVariant::Default,
             },
             dark_mode: settings.dark_mode,
@@ -79,6 +69,7 @@ macro_rules! theme_dispatch {
         }
 
         impl Theme {
+            #[allow(dead_code)]
             pub fn name(&self) -> &'static str {
                 self.variant.name()
             }
@@ -96,6 +87,18 @@ macro_rules! theme_dispatch {
                 }
             }
 
+            pub fn danger_color(&self) -> Color32 {
+                match self.variant {
+                    $( $variant => $class::danger_color(self.dark_mode), )+
+                }
+            }
+
+            pub fn main_content_bgcolor(&self) -> Color32 {
+                match self.variant {
+                    $( $variant => $class::main_content_bgcolor(self.dark_mode), )+
+                }
+            }
+
             #[allow(dead_code)]
             pub fn highlighted_note_bgcolor(&self) -> Color32 {
                 match self.variant {
@@ -106,6 +109,33 @@ macro_rules! theme_dispatch {
             pub fn get_style(&self) -> Style {
                 match self.variant {
                     $( $variant => $class::get_style(self.dark_mode), )+
+                }
+            }
+
+            pub fn get_on_accent_style(&self) -> Style {
+                match self.variant {
+                    $( $variant => $class::get_on_accent_style(self.dark_mode), )+
+                }
+            }
+
+            /// accent-colored button style 1 (filled)
+            pub fn accent_button_1_style(&self, style: &mut Style) {
+                match self.variant {
+                    $( $variant => $class::accent_button_1_style(style, self.dark_mode), )+
+                }
+            }
+
+            /// accent-colored button style 2 (white w. accent outline)
+            pub fn accent_button_2_style(&self, style: &mut Style) {
+                match self.variant {
+                    $( $variant => $class::accent_button_2_style(style, self.dark_mode), )+
+                }
+            }
+
+            /// 'danger' colored hover for accent-colored button styles
+            pub fn accent_button_danger_hover(&self, style: &mut Style) {
+                match self.variant {
+                    $( $variant => $class::accent_button_danger_hover(style, self.dark_mode), )+
                 }
             }
 
@@ -145,6 +175,12 @@ macro_rules! theme_dispatch {
             pub fn navigation_bg_fill(&self) -> Color32 {
                 match self.variant {
                     $( $variant => $class::navigation_bg_fill(self.dark_mode), )+
+                }
+            }
+
+            pub fn navigation_text_deactivated_color(&self) -> Color32 {
+                match self.variant {
+                    $( $variant => $class::navigation_text_deactivated_color(self.dark_mode), )+
                 }
             }
 
@@ -331,17 +367,7 @@ macro_rules! theme_dispatch {
     }
 }
 
-theme_dispatch!(
-    ThemeVariant::Classic,
-    ClassicTheme,
-    "Classic",
-    ThemeVariant::Default,
-    DefaultTheme,
-    "Default",
-    ThemeVariant::Roundy,
-    RoundyTheme,
-    "Roundy"
-);
+theme_dispatch!(ThemeVariant::Default, DefaultTheme, "Default");
 
 pub trait ThemeDef: Send + Sync {
     // User facing name
@@ -350,14 +376,29 @@ pub trait ThemeDef: Send + Sync {
     // Used for strokes, lines, and text in various places
     fn accent_color(dark_mode: bool) -> Color32;
 
+    fn accent_complementary_color(dark_mode: bool) -> Color32;
+
+    fn danger_color(dark_mode: bool) -> Color32;
+
+    fn main_content_bgcolor(dark_mode: bool) -> Color32;
+
     // Used as background for highlighting unread events
     fn highlighted_note_bgcolor(dark_mode: bool) -> Color32;
-
-    fn accent_complementary_color(dark_mode: bool) -> Color32;
 
     // These styles are used by egui by default for widgets if you don't override them
     // in place.
     fn get_style(dark_mode: bool) -> Style;
+    /// the style to use when displaying on-top of an accent-colored background
+    fn get_on_accent_style(dark_mode: bool) -> Style;
+
+    /// accent-colored button style 1 (filled)
+    fn accent_button_1_style(style: &mut Style, dark_mode: bool);
+
+    /// accent-colored button style 2 (white w. accent outline)
+    fn accent_button_2_style(style: &mut Style, dark_mode: bool);
+
+    /// 'danger' colored hover for accent-colored button styles
+    fn accent_button_danger_hover(style: &mut Style, dark_mode: bool);
 
     fn font_definitions() -> FontDefinitions;
     fn text_styles() -> BTreeMap<TextStyle, FontId>;
@@ -366,6 +407,7 @@ pub trait ThemeDef: Send + Sync {
     fn notice_marker_text_color(dark_mode: bool) -> eframe::egui::Color32;
 
     fn navigation_bg_fill(dark_mode: bool) -> eframe::egui::Color32;
+    fn navigation_text_deactivated_color(dark_mode: bool) -> eframe::egui::Color32;
     fn navigation_text_color(dark_mode: bool) -> eframe::egui::Color32;
     fn navigation_text_active_color(dark_mode: bool) -> eframe::egui::Color32;
     fn navigation_text_hover_color(dark_mode: bool) -> eframe::egui::Color32;
@@ -404,6 +446,13 @@ pub trait ThemeDef: Send + Sync {
 
     // image rounding
     fn round_image() -> bool;
+
+    fn darken_color(color: Color32, factor: f32) -> Color32 {
+        let mut hsva: ecolor::HsvaGamma = color.into();
+        let original_value = hsva.v;
+        hsva.v = original_value * (1.0 - factor); // Linear interpolation
+        hsva.into()
+    }
 }
 
 pub(super) fn font_definitions() -> FontDefinitions {

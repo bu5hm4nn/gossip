@@ -1,4 +1,5 @@
 use crate::dm_channel::DmChannel;
+use crate::people::PersonList;
 use nostr_types::{
     Event, EventAddr, Id, IdHex, Metadata, MilliSatoshi, Profile, PublicKey, RelayUrl, Tag,
     UncheckedUrl,
@@ -52,13 +53,13 @@ pub enum ToOverlordMessage {
     FetchEventAddr(EventAddr),
 
     /// Calls [follow_pubkey](crate::Overlord::follow_pubkey)
-    FollowPubkey(PublicKey),
+    FollowPubkey(PublicKey, bool),
 
     /// Calls [follow_nip05](crate::Overlord::follow_nip05)
-    FollowNip05(String),
+    FollowNip05(String, bool),
 
     /// Calls [follow_nprofile](crate::Overlord::follow_nprofile)
-    FollowNprofile(Profile),
+    FollowNprofile(Profile, bool),
 
     /// Calls [generate_private_key](crate::Overlord::generate_private_key)
     GeneratePrivateKey(String),
@@ -78,9 +79,6 @@ pub enum ToOverlordMessage {
 
     /// Calls [like](crate::Overlord::like)
     Like(Id, PublicKey),
-
-    /// internal (minions use this channel too)
-    MinionIsReady,
 
     /// internal (minions use this channel too)
     MinionJobComplete(RelayUrl, u64),
@@ -105,14 +103,11 @@ pub enum ToOverlordMessage {
     /// Calls [prune_database](crate::Overlord::prune_database)
     PruneDatabase,
 
-    /// Calls [push_follow](crate::Overlord::push_follow)
-    PushFollow,
+    /// Calls [push_person_list](crate::Overlord::push_person_list)
+    PushPersonList(PersonList),
 
     /// Calls [push_metadata](crate::Overlord::push_metadata)
     PushMetadata(Metadata),
-
-    /// Calls [push_mute_list](crate::Overlord::push_mute_list)
-    PushMuteList,
 
     /// Calls [rank_relay](crate::Overlord::rank_relay)
     RankRelay(RelayUrl, u8),
@@ -120,8 +115,8 @@ pub enum ToOverlordMessage {
     /// internal (the overlord sends messages to itself sometimes!)
     ReengageMinion(RelayUrl, Vec<RelayJob>),
 
-    /// Calls [reresh_followed_metadata](crate::Overlord::refresh_followed_metadata)
-    RefreshFollowedMetadata,
+    /// Calls [reresh_subscribed_metadata](crate::Overlord::refresh_subscribed_metadata)
+    RefreshSubscribedMetadata,
 
     /// Calls [repost](crate::Overlord::repost)
     Repost(Id),
@@ -155,17 +150,17 @@ pub enum ToOverlordMessage {
     /// Calls [unlock_key](crate::Overlord::unlock_key)
     UnlockKey(String),
 
-    /// Calls [update_following](crate::Overlord::update_following)
-    UpdateFollowing { merge: bool },
-
     /// Calls [update_metadata](crate::Overlord::update_metadata)
     UpdateMetadata(PublicKey),
 
     /// Calls [update_metadata_in_bulk](crate::Overlord::update_metadata_in_bulk)
     UpdateMetadataInBulk(Vec<PublicKey>),
 
-    /// Calls [update_mute_list](crate::Overlord::update_mute_list)
-    UpdateMuteList { merge: bool },
+    /// Calls [update_person_list](crate::Overlord::update_person_list)
+    UpdatePersonList {
+        person_list: PersonList,
+        merge: bool,
+    },
 
     /// Calls [visible_notes_changed](crate::Overlord::visible_notes_changed)
     VisibleNotesChanged(Vec<Id>),

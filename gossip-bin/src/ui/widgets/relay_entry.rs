@@ -8,7 +8,7 @@ use gossip_lib::{comms::ToOverlordMessage, Relay, GLOBALS};
 use super::{
     list_entry::{
         self, allocate_text_at, draw_link_at, draw_text_at, draw_text_galley_at, paint_hline,
-        safe_truncate, TEXT_BOTTOM, TEXT_LEFT, TEXT_RIGHT, TEXT_TOP, TITLE_FONT_SIZE,
+        TEXT_BOTTOM, TEXT_LEFT, TEXT_RIGHT, TEXT_TOP, TITLE_FONT_SIZE,
     },
     CopyButton, COPY_SYMBOL_SIZE,
 };
@@ -55,8 +55,6 @@ const STATUS_SYMBOL_SPACE: f32 = 25.0;
 const SHORT_STAT_RATE_WIDTH: f32 = 30.0;
 const SHORT_STAT_FOLLOW_WIDTH: f32 = 50.0;
 const SHORT_STATS_SPACE: f32 = SHORT_STAT_RATE_WIDTH + SHORT_STAT_FOLLOW_WIDTH + 40.0;
-/// Max length of title string
-const TITLE_MAX_LEN: usize = 50;
 /// First stat column x location
 const STATS_COL_1_X: f32 = TEXT_LEFT;
 /// 2. stat column x offset
@@ -337,21 +335,20 @@ impl RelayEntry {
     }
 
     fn paint_title(&self, ui: &mut Ui, rect: &Rect) {
+        let title = self.relay.url.host();
+        let text = RichText::new(title).size(list_entry::TITLE_FONT_SIZE);
+        let galley = list_entry::text_to_galley_max_width(
+            ui,
+            text.into(),
+            Align::LEFT,
+            rect.width() - 200.0,
+        );
         let pos = match self.view {
             RelayEntryView::List => rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE + SHORT_STATS_SPACE, TEXT_TOP),
             _ => rect.min + vec2(TEXT_LEFT + STATUS_SYMBOL_SPACE, TEXT_TOP + 4.0),
         };
-
-        let title = self.relay.url.as_str().trim_start_matches("wss://");
-        let title = title.trim_start_matches("ws://");
-        let title = title.trim_end_matches('/');
-        let mut title = safe_truncate(title, TITLE_MAX_LEN).to_string();
-        if title.len() > TITLE_MAX_LEN {
-            title.push('\u{2026}'); // append ellipsis
-        }
-        let text = RichText::new(title).size(16.5);
-        let title_rect = draw_text_at(ui, pos, text.into(), Align::LEFT, Some(self.accent), None);
-        ui.interact(title_rect, ui.next_auto_id(), Sense::hover())
+        let rect = draw_text_galley_at(ui, pos, galley, Some(self.accent), None);
+        ui.interact(rect, ui.next_auto_id(), Sense::hover())
             .on_hover_text(self.relay.url.as_str());
     }
 
@@ -435,9 +432,18 @@ impl RelayEntry {
     fn paint_lower_buttons(&self, ui: &mut Ui, rect: &Rect) -> Response {
         let line_height = ui.fonts(|f| f.row_height(&FontId::default()));
         let pos = rect.left_bottom() + vec2(TEXT_LEFT, -TEXT_BOTTOM - line_height);
+        let is_personal = self.relay.usage_bits != 0;
         let id = self.make_id("remove_link");
         let text = "Remove from personal list";
-        let mut response = draw_link_at(ui, id, pos, text.into(), Align::Min, self.enabled, true);
+        let response = draw_link_at(
+            ui,
+            id,
+            pos,
+            text.into(),
+            Align::Min,
+            self.enabled && is_personal,
+            true,
+        );
         if response.clicked() {
             let _ = GLOBALS.storage.modify_relay(
                 &self.relay.url,
@@ -458,16 +464,10 @@ impl RelayEntry {
         let pos = pos + vec2(200.0, 0.0);
         let id = self.make_id("disconnect_link");
         let text = "Force disconnect";
-        response |= draw_link_at(
-            ui,
-            id,
-            pos,
-            text.into(),
-            Align::Min,
-            self.enabled && self.connected,
-            true,
-        );
-        if response.clicked() {
+        let can_disconnect = self.enabled && self.connected;
+        let disconnect_response =
+            draw_link_at(ui, id, pos, text.into(), Align::Min, can_disconnect, true);
+        if can_disconnect && disconnect_response.clicked() {
             let _ = GLOBALS
                 .to_overlord
                 .send(ToOverlordMessage::DropRelay(self.relay.url.to_owned()));
@@ -480,7 +480,7 @@ impl RelayEntry {
         } else {
             "Hide Relay"
         };
-        response |= draw_link_at(ui, id, pos, text.into(), Align::Min, self.enabled, true);
+        let response = draw_link_at(ui, id, pos, text.into(), Align::Min, self.enabled, true);
         if response.clicked() {
             let _ = GLOBALS.to_overlord.send(ToOverlordMessage::HideOrShowRelay(
                 self.relay.url.to_owned(),
@@ -684,6 +684,7 @@ impl RelayEntry {
 
     fn paint_nip11(&self, ui: &mut Ui, rect: &Rect) {
         let align = egui::Align::LEFT;
+        let max_width = rect.width() - TEXT_RIGHT - TEXT_LEFT - USAGE_SWITCH_PULL_RIGHT - 30.0;
         let pos = rect.left_top() + vec2(TEXT_LEFT, DETAIL_SECTION_TOP);
         if let Some(doc) = &self.relay.nip11 {
             if let Some(contact) = &doc.contact {
@@ -705,12 +706,13 @@ impl RelayEntry {
                     });
                 }
                 response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                CopyButton::paint(ui, pos);
+                CopyButton::new().paint(ui, pos);
             }
             let pos = pos + vec2(0.0, NIP11_Y_SPACING);
             if let Some(desc) = &doc.description {
-                let desc_tr = safe_truncate(desc.as_str(), 70); // TODO is this a good number?
-                let rect = draw_text_at(ui, pos, desc_tr.into(), align, None, None);
+                let galley =
+                    list_entry::text_to_galley_max_width(ui, desc.into(), align, max_width);
+                let rect = draw_text_galley_at(ui, pos, galley, None, None);
                 ui.interact(rect, self.make_id("nip11desc"), Sense::hover())
                     .on_hover_ui(|ui| {
                         ui.horizontal_wrapped(|ui| {
@@ -723,7 +725,13 @@ impl RelayEntry {
             if let Some(pubkey) = &doc.pubkey {
                 if let Ok(pubhex) = PublicKeyHex::try_from_str(pubkey.as_str()) {
                     let npub = pubhex.as_bech32_string();
-                    let rect = draw_text_at(ui, pos, npub.clone().into(), align, None, None);
+                    let galley = list_entry::text_to_galley_max_width(
+                        ui,
+                        npub.clone().into(),
+                        align,
+                        max_width - COPY_SYMBOL_SIZE.x,
+                    );
+                    let rect = draw_text_galley_at(ui, pos, galley, None, None);
                     let id = self.make_id("copy_nip11_npub");
                     let pos = pos + vec2(rect.width() + ui.spacing().item_spacing.x, 0.0);
                     let response = ui.interact(
@@ -741,7 +749,7 @@ impl RelayEntry {
                         });
                     }
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                    CopyButton::paint(ui, pos);
+                    CopyButton::new().paint(ui, pos);
                 }
             }
             let pos = pos + vec2(0.0, NIP11_Y_SPACING);
