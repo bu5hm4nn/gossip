@@ -42,6 +42,7 @@ use gossip_lib::Settings;
 use gossip_lib::{DmChannel, DmChannelData};
 use gossip_lib::{Person, PersonList};
 use gossip_lib::{ZapState, GLOBALS};
+use nostr_types::ContentSegment;
 use nostr_types::{Id, Metadata, MilliSatoshi, Profile, PublicKey, UncheckedUrl, Url};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "video-ffmpeg")]
@@ -271,7 +272,11 @@ pub enum HighlightType {
 }
 
 pub struct DraftData {
+    // The draft text displayed in the edit textbox
     pub draft: String,
+
+    // text replacements like nurls, hyperlinks or hashtags
+    pub replacements: HashMap<String,ContentSegment>,
 
     pub include_subject: bool,
     pub subject: String,
@@ -294,6 +299,7 @@ impl Default for DraftData {
     fn default() -> DraftData {
         DraftData {
             draft: "".to_owned(),
+            replacements: HashMap::new(),
             include_subject: false,
             subject: "".to_owned(),
             include_content_warning: false,
@@ -314,6 +320,7 @@ impl Default for DraftData {
 impl DraftData {
     pub fn clear(&mut self) {
         self.draft = "".to_owned();
+        self.replacements.clear();
         self.include_subject = false;
         self.subject = "".to_owned();
         self.include_content_warning = false;
