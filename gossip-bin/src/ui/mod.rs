@@ -282,7 +282,6 @@ pub struct DraftData {
     // Data for normal draft
     pub repost: Option<Id>,
     pub replying_to: Option<Id>,
-    pub tag_someone: String,
 
     // If the user is typing a @tag, this is what they typed
     pub tagging_search_substring: Option<String>,
@@ -303,7 +302,6 @@ impl Default for DraftData {
             // The following are ignored for DMs
             repost: None,
             replying_to: None,
-            tag_someone: "".to_owned(),
 
             tagging_search_substring: None,
             tagging_search_selected: None,
@@ -322,7 +320,6 @@ impl DraftData {
         self.content_warning = "".to_owned();
         self.repost = None;
         self.replying_to = None;
-        self.tag_someone = "".to_owned();
         self.tagging_search_substring = None;
         self.tagging_search_selected = None;
         self.tagging_search_searched = None;

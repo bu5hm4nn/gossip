@@ -4,7 +4,6 @@ use eframe::egui;
 use eframe::epaint::text::LayoutJob;
 use egui::containers::CollapsingHeader;
 use egui::{Align, Context, Key, Layout, Modifiers, RichText, Ui};
-use egui_winit::egui::text_edit::CCursorRange;
 use gossip_lib::comms::ToOverlordMessage;
 use gossip_lib::DmChannel;
 use gossip_lib::Relay;
@@ -31,7 +30,17 @@ pub fn textarea_highlighter(theme: Theme, text: String) -> LayoutJob {
                     NostrBech32::Pubkey(_) => HighlightType::PublicKey,
                     NostrBech32::Relay(_) => HighlightType::Relay,
                 };
-                job.append(&chunk, 0.0, theme.highlight_text_format(highlight));
+                match &nostr_url.0 {
+                    NostrBech32::Profile(p) => {
+                        let name = gossip_lib::names::best_name_from_pubkey_lookup(&p.pubkey);
+                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
+                    },
+                    NostrBech32::Pubkey(pk) => {
+                        let name = gossip_lib::names::best_name_from_pubkey_lookup(pk);
+                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
+                    },
+                    _ => job.append(&chunk, 0.0, theme.highlight_text_format(highlight)),
+                }
             }
             ContentSegment::TagReference(i) => {
                 let chunk = format!("#[{}]", i);
@@ -119,6 +128,7 @@ fn dm_posting_area(
     ui: &mut Ui,
     dm_channel: &DmChannel,
 ) {
+    let compose_area_id: egui::Id = egui::Id::new("compose_area");
     let mut send_now: bool = false;
 
     // Text area
@@ -157,7 +167,7 @@ fn dm_posting_area(
 
     let draft_response = ui.add(
         text_edit_multiline!(app, app.dm_draft_data.draft)
-            .id_source("compose_area")
+            .id_source(compose_area_id)
             .hint_text("Type your message here")
             .desired_width(f32::INFINITY)
             .lock_focus(true)
@@ -283,6 +293,7 @@ fn dm_posting_area(
 fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Frame, ui: &mut Ui) {
     // Maybe render post we are replying to or reposting
 
+    let compose_area_id: egui::Id = egui::Id::new("compose_area");
     let mut send_now: bool = false;
 
     let screen_rect = ctx.input(|i| i.screen_rect);
@@ -318,6 +329,17 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                 let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
                     let mut layout_job = textarea_highlighter(theme, text.to_owned());
                     layout_job.wrap.max_width = wrap_width;
+
+                    // adjust cursor
+                    let mut state =
+                        egui::TextEdit::load_state(ctx, compose_area_id).unwrap_or_default();
+                    let mut ccrange = state.ccursor_range().unwrap_or_default();
+                    let offset = text.chars().count() - layout_job.text.chars().count();
+                    ccrange.primary.index += offset;
+                    ccrange.secondary.index += offset;
+                    state.set_ccursor_range(Some(ccrange));
+                    state.store(ctx, compose_area_id);
+
                     ui.fonts(|f| f.layout_job(layout_job))
                 };
 
@@ -343,13 +365,11 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                     });
                 }
 
-                let text_edit_area_id = egui::Id::new("compose_area");
-
                 // Determine if we are in tagging mode
                 {
                     app.draft_data.tagging_search_substring = None;
                     let text_edit_state =
-                        egui::TextEdit::load_state(ctx, text_edit_area_id).unwrap_or_default();
+                        egui::TextEdit::load_state(ctx, compose_area_id).unwrap_or_default();
                     let ccursor_range = text_edit_state.ccursor_range().unwrap_or_default();
                     // debugging:
                     // ui.label(format!("{}-{}", ccursor_range.primary.index,
@@ -419,7 +439,7 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                 }
 
                 let text_edit_area = text_edit_multiline!(app, app.draft_data.draft)
-                    .id(text_edit_area_id)
+                    .id(compose_area_id)
                     .hint_text("Type your message here")
                     .desired_width(f32::INFINITY)
                     .lock_focus(true)
@@ -611,15 +631,13 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                                                 .replace(&format!("@{}", search), &nurl)
                                                 .to_string();
 
-                                            app.draft_data.tag_someone = "".to_owned();
-
-                                            // mover cursor to end
-                                            let mut state = output.state.clone();
-                                            let mut ccrange = CCursorRange::default();
-                                            ccrange.primary.index = usize::MAX;
-                                            ccrange.secondary.index = usize::MAX;
-                                            state.set_ccursor_range(Some(ccrange));
-                                            state.store(ctx, text_edit_area_id);
+                                            // // mover cursor to end
+                                            // let mut state = output.state.clone();
+                                            // let mut ccrange = CCursorRange::default();
+                                            // ccrange.primary.index = usize::MAX;
+                                            // ccrange.secondary.index = usize::MAX;
+                                            // state.set_ccursor_range(Some(ccrange));
+                                            // state.store(ctx, compose_area_id);
                                         }
                                     }
                                 });
