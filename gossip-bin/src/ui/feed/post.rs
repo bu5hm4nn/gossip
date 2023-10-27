@@ -36,7 +36,7 @@ fn highlight_nurl(theme: &Theme, nostr_url: &NostrUrl) -> (String, f32, TextForm
 }
 
 #[memoize]
-pub fn textarea_highlighter(theme: Theme, text: String) -> LayoutJob {
+pub fn textarea_highlighter(theme: Theme, text: String, interests: Vec<String>) -> LayoutJob {
     let mut job = LayoutJob::default();
 
     // Shatter
@@ -70,25 +70,28 @@ pub fn textarea_highlighter(theme: Theme, text: String) -> LayoutJob {
             ContentSegment::Plain(span) => {
                 let chunk = shattered_content.slice(span).unwrap();
 
-                // put a tag '@something' into its own job section
                 let mut pos = 0;
-                for capture in GLOBALS.tagging_regex_2.captures_iter(chunk) {
-                    if let Some(mat) = capture.get(1) {
+                // any entry in interests gets it's own layout section
+                for interest in &interests {
+                    if let Some(ipos) = chunk.find(interest.as_str()) {
+                        // add stuff before the interest
                         job.append(
-                            &chunk[pos..mat.start()],
+                            &chunk[pos..ipos],
                             0.0,
                             theme.highlight_text_format(HighlightType::Nothing)
                         );
 
+                        pos = ipos+interest.len();
+                        // add the interest
                         job.append(
-                        &chunk[mat.start()..mat.end()],
+                        &chunk[ipos..pos],
                             0.0,
                             theme.highlight_text_format(HighlightType::Nothing)
                         );
-                        pos = mat.end();
                     }
                 }
 
+                // add anything else
                 let slice = &chunk[pos..];
                 if !slice.is_empty() {
                     job.append(
@@ -163,7 +166,7 @@ fn dm_posting_area(
     // Text area
     let theme = app.theme;
     let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
-        let mut layout_job = textarea_highlighter(theme, text.to_owned());
+        let mut layout_job = textarea_highlighter(theme, text.to_owned(), Vec::new());
         layout_job.wrap.max_width = wrap_width;
         ui.fonts(|f| f.layout_job(layout_job))
     };
@@ -356,7 +359,12 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                 // Text area
                 let theme = app.theme;
                 let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
-                    let mut layout_job = textarea_highlighter(theme, text.to_owned());
+                    let interests = app.draft_data.replacements
+                        .iter()
+                        .map(|(k, _v)| {
+                            k.clone()
+                    }).collect::<Vec<String>>();
+                    let mut layout_job = textarea_highlighter(theme, text.to_owned(), interests);
                     layout_job.wrap.max_width = wrap_width;
 
                     for section in &mut layout_job.sections {
@@ -425,10 +433,6 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                 (app.draft_data.tagging_search_selected, enter_key) =
                     if app.draft_data.tagging_search_substring.is_some() {
                         ui.input_mut(|i| {
-                            // left / right
-                            i.consume_key(Modifiers::NONE, Key::ArrowLeft); // need to use backspace
-                            i.consume_key(Modifiers::NONE, Key::ArrowRight); // don't leave the search string
-
                             // enter
                             let enter = i.count_and_consume_key(Modifiers::NONE, Key::Enter) > 0;
 
@@ -659,7 +663,7 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
 
                                             // complete name and add replacement
                                             // TODO find a better way to name without spaces
-                                            let name = format!("@{}", pair.0.as_str().replace(" ", "_"));
+                                            let name = pair.0.clone();
                                             let nostr_url: NostrUrl = pair.1.into();
                                             app.draft_data.draft = app
                                                 .draft_data
