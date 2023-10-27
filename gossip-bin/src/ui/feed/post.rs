@@ -30,17 +30,7 @@ pub fn textarea_highlighter(theme: Theme, text: String, interests: Vec<String>) 
                     NostrBech32::Pubkey(_) => HighlightType::PublicKey,
                     NostrBech32::Relay(_) => HighlightType::Relay,
                 };
-                match &nostr_url.0 {
-                    NostrBech32::Profile(p) => {
-                        let name = gossip_lib::names::best_name_from_pubkey_lookup(&p.pubkey);
-                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
-                    },
-                    NostrBech32::Pubkey(pk) => {
-                        let name = gossip_lib::names::best_name_from_pubkey_lookup(pk);
-                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
-                    },
-                    _ => job.append(&chunk, 0.0, theme.highlight_text_format(highlight)),
-                }
+                job.append(&chunk, 0.0, theme.highlight_text_format(highlight));
             }
             ContentSegment::TagReference(i) => {
                 let chunk = format!("#[{}]", i);
