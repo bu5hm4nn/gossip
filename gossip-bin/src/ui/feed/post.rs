@@ -4,36 +4,12 @@ use eframe::egui;
 use eframe::epaint::text::LayoutJob;
 use egui::containers::CollapsingHeader;
 use egui::{Align, Context, Key, Layout, Modifiers, RichText, Ui};
-use egui_winit::egui::{TextBuffer, TextFormat};
 use gossip_lib::comms::ToOverlordMessage;
 use gossip_lib::DmChannel;
 use gossip_lib::Relay;
 use gossip_lib::GLOBALS;
 use memoize::memoize;
 use nostr_types::{ContentSegment, NostrBech32, NostrUrl, ShatteredContent, Tag};
-
-fn highlight_nurl(theme: &Theme, nostr_url: &NostrUrl) -> (String, f32, TextFormat) {
-    let chunk = format!("{}", nostr_url);
-    let highlight = match nostr_url.0 {
-        NostrBech32::EventAddr(_) => HighlightType::Event,
-        NostrBech32::EventPointer(_) => HighlightType::Event,
-        NostrBech32::Id(_) => HighlightType::Event,
-        NostrBech32::Profile(_) => HighlightType::PublicKey,
-        NostrBech32::Pubkey(_) => HighlightType::PublicKey,
-        NostrBech32::Relay(_) => HighlightType::Relay,
-    };
-    match &nostr_url.0 {
-        NostrBech32::Profile(p) => {
-            let name = gossip_lib::names::best_name_from_pubkey_lookup(&p.pubkey);
-            (format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
-        },
-        NostrBech32::Pubkey(pk) => {
-            let name = gossip_lib::names::best_name_from_pubkey_lookup(pk);
-            (format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
-        },
-        _ => (chunk, 0.0, theme.highlight_text_format(highlight))
-    }
-}
 
 #[memoize]
 pub fn textarea_highlighter(theme: Theme, text: String, interests: Vec<String>) -> LayoutJob {
@@ -45,8 +21,26 @@ pub fn textarea_highlighter(theme: Theme, text: String, interests: Vec<String>) 
     for segment in shattered_content.segments.iter() {
         match segment {
             ContentSegment::NostrUrl(nostr_url) => {
-                let (text, leading_space, format) = highlight_nurl(&theme, nostr_url);
-                job.append(text.as_str(), leading_space, format);
+                let chunk = format!("{}", nostr_url);
+                let highlight = match nostr_url.0 {
+                    NostrBech32::EventAddr(_) => HighlightType::Event,
+                    NostrBech32::EventPointer(_) => HighlightType::Event,
+                    NostrBech32::Id(_) => HighlightType::Event,
+                    NostrBech32::Profile(_) => HighlightType::PublicKey,
+                    NostrBech32::Pubkey(_) => HighlightType::PublicKey,
+                    NostrBech32::Relay(_) => HighlightType::Relay,
+                };
+                match &nostr_url.0 {
+                    NostrBech32::Profile(p) => {
+                        let name = gossip_lib::names::best_name_from_pubkey_lookup(&p.pubkey);
+                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
+                    },
+                    NostrBech32::Pubkey(pk) => {
+                        let name = gossip_lib::names::best_name_from_pubkey_lookup(pk);
+                        job.append(&format!("@{}",name), 0.0, theme.highlight_text_format(highlight))
+                    },
+                    _ => job.append(&chunk, 0.0, theme.highlight_text_format(highlight)),
+                }
             }
             ContentSegment::TagReference(i) => {
                 let chunk = format!("#[{}]", i);
@@ -86,7 +80,7 @@ pub fn textarea_highlighter(theme: Theme, text: String, interests: Vec<String>) 
                         job.append(
                         &chunk[ipos..pos],
                             0.0,
-                            theme.highlight_text_format(HighlightType::Nothing)
+                            theme.highlight_text_format(HighlightType::Hyperlink)
                         );
                     }
                 }
@@ -359,26 +353,15 @@ fn real_posting_area(app: &mut GossipUi, ctx: &Context, frame: &mut eframe::Fram
                 // Text area
                 let theme = app.theme;
                 let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
+
                     let interests = app.draft_data.replacements
                         .iter()
                         .map(|(k, _v)| {
                             k.clone()
                     }).collect::<Vec<String>>();
+
                     let mut layout_job = textarea_highlighter(theme, text.to_owned(), interests);
                     layout_job.wrap.max_width = wrap_width;
-
-                    for section in &mut layout_job.sections {
-                        let chunk = layout_job.text.char_range(section.byte_range.clone());
-                        if let Some(content) = app.draft_data.replacements.get(chunk) {
-                            match content {
-                                ContentSegment::NostrUrl(nostr_url) => {
-                                    let (_, _, format) = highlight_nurl(&theme, nostr_url);
-                                    section.format = format;
-                                },
-                                _ => { } // not supported yet
-                            }
-                        }
-                    }
 
                     ui.fonts(|f| f.layout_job(layout_job))
                 };

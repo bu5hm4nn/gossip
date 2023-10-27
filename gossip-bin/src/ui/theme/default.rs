@@ -479,9 +479,9 @@ impl ThemeDef for DefaultTheme {
                 ..Default::default()
             },
             HighlightType::PublicKey => TextFormat {
-                font_id: FontId::new(12.5, FontFamily::Proportional),
-                background: Color32::TRANSPARENT,
-                color: Self::accent_color(dark_mode),
+                font_id: FontId::new(12.5, FontFamily::Monospace),
+                background: grey,
+                color: green,
                 ..Default::default()
             },
             HighlightType::Event => TextFormat {
