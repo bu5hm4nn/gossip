@@ -7,7 +7,7 @@ use nostr_types::{
     ShatteredContent,
 };
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub(super) enum RepostType {
     /// Damus style, kind 6 repost where the reposted note's JSON
     /// is included in the content

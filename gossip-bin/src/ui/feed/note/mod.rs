@@ -142,7 +142,7 @@ pub(super) fn render_note(
                                 note_ref.clone(),
                                 &render_data,
                                 as_reply_to,
-                                &None,
+                                None,
                             );
                         });
                     })
@@ -211,7 +211,7 @@ fn render_note_inner(
     note_ref: Rc<RefCell<NoteData>>,
     render_data: &NoteRenderData,
     hide_footer: bool,
-    parent_repost: &Option<RepostType>,
+    parent_repost: Option<RepostType>,
 ) {
     if let Ok(note) = note_ref.try_borrow() {
         let collapsed = app.collapsed.contains(&note.event.id);
@@ -1126,7 +1126,7 @@ fn render_content(
                                 app,
                                 ui,
                                 ctx,
-                                &note.repost,
+                                note.repost,
                                 inner_ref,
                                 content_margin_left,
                                 bottom_of_avatar,
@@ -1141,7 +1141,7 @@ fn render_content(
                                 app,
                                 ui,
                                 ctx,
-                                &note.repost,
+                                note.repost,
                                 inner_ref,
                                 content_margin_left,
                                 bottom_of_avatar,
@@ -1155,7 +1155,7 @@ fn render_content(
                                             app,
                                             ui,
                                             ctx,
-                                            &note.repost,
+                                            note.repost,
                                             note_data,
                                             content_margin_left,
                                             bottom_of_avatar,
@@ -1211,7 +1211,7 @@ fn render_repost(
     app: &mut GossipUi,
     ui: &mut Ui,
     ctx: &Context,
-    parent_repost: &Option<RepostType>,
+    parent_repost: Option<RepostType>,
     repost_ref: Rc<RefCell<NoteData>>,
     content_margin_left: f32,
     bottom_of_avatar: f32,
@@ -1221,7 +1221,7 @@ fn render_repost(
             // the full note height differs from the reposted height anyways
             height: 0.0,
             has_repost: repost_data.repost.is_some(),
-            is_comment_mention: *parent_repost == Some(RepostType::CommentMention),
+            is_comment_mention: parent_repost == Some(RepostType::CommentMention),
             is_new: false,
             is_main_event: false,
             is_thread: false,
