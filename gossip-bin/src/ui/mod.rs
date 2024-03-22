@@ -1386,10 +1386,10 @@ impl eframe::App for GossipUi {
         egui::TopBottomPanel::top("top-area")
             .frame(
                 egui::Frame::side_top_panel(&self.theme.get_style()).inner_margin(egui::Margin {
-                    left: 20.0,
-                    right: 15.0,
-                    top: 10.0,
-                    bottom: 10.0,
+                    left: 30.0,
+                    right: 30.0,
+                    top: 20.0,
+                    bottom: 20.0,
                 }),
             )
             .resizable(true)
@@ -1400,14 +1400,14 @@ impl eframe::App for GossipUi {
                     self.begin_ui(ui);
                     #[cfg(feature = "video-ffmpeg")]
                     {
-                        if !self.warn_no_libsdl2_dismissed && self.audio_device.is_none() {
+                        if true {
                             widgets::warning_frame(ui, self, |ui, app| {
                                 ui.label("You have compiled gossip with 'video-ffmpeg' option but no audio device was found on your system. Make sure you have followed the instructions at ");
                                 ui.hyperlink("https://github.com/Rust-SDL2/rust-sdl2");
                                 ui.label("and installed 'libsdl2-dev' package for your system.");
                                 ui.end_row();
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::default()), |ui| {
-                                    if ui.link("dismiss message").clicked() {
+                                    if ui.link("Dismiss message").clicked() {
                                         app.warn_no_libsdl2_dismissed = true;
                                     }
                                 });
