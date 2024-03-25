@@ -554,12 +554,12 @@ pub fn handle_command(event: &Event, seen_on: Option<RelayUrl>) -> Result<(), Er
         }
     };
 
-    if params[0] != public_key.as_hex_string() {
-        // We aren't setup to receive a connection
+    if params[0] != event.pubkey.as_hex_string() {
+        // Pubkey mismatch
         send_response(
             id.clone(),
             "".to_owned(),
-            "Gossip is not configured to sign with the requested public key".to_string(),
+            "param[0] must match sender pubkey".to_string(),
             event.pubkey,
             reply_relays,
         )?;
@@ -570,7 +570,7 @@ pub fn handle_command(event: &Event, seen_on: Option<RelayUrl>) -> Result<(), Er
         send_response(
             id.clone(),
             "".to_owned(),
-            "Incorrect secret.".to_string(),
+            "param[1] incorrect secret.".to_string(),
             event.pubkey,
             reply_relays,
         )?;
