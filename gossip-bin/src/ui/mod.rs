@@ -71,6 +71,8 @@ use gossip_lib::{
 use nostr_types::ContentSegment;
 use nostr_types::RelayUrl;
 use nostr_types::{Id, Metadata, MilliSatoshi, Profile, PublicKey, UncheckedUrl, Url};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -304,6 +306,11 @@ pub enum HighlightType {
     Hyperlink,
 }
 
+#[derive(PartialEq, Clone)]
+enum GossipWindow {
+    Page(Page),
+}
+
 pub struct DraftData {
     // The draft text displayed in the edit textbox
     pub draft: String,
@@ -522,6 +529,9 @@ struct GossipUi {
     dm_channel_cache: Vec<DmChannelData>,
     dm_channel_next_refresh: Instant,
     dm_channel_error: Option<String>,
+
+    // other windows
+    windows: Vec<GossipWindow>,
 }
 
 impl Drop for GossipUi {
@@ -732,6 +742,7 @@ impl GossipUi {
             dm_channel_cache: vec![],
             dm_channel_next_refresh: Instant::now(),
             dm_channel_error: None,
+            windows: Vec::new(),
         }
     }
 
@@ -1506,6 +1517,60 @@ impl eframe::App for GossipUi {
                     Page::Wizard(_) => unreachable!(),
                 }
             });
+
+        // draw other windows
+        // TODO optimize performance by using `show_viewport_deferred` instead of immediate
+        //      but deferred rendering requires untangling GossipUi struct, dividing pages into their own data
+        //      and then storing that data behind Send + Sync
+        let mut close_list: Vec<&GossipWindow> = Vec::new();
+        let windows = self.windows.clone();
+        for window in windows.iter() {
+            let wants_close: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            match window {
+                GossipWindow::Page(page) => {
+                    ctx.show_viewport_immediate(
+                        egui::ViewportId::from_hash_of(page.to_short_string()),
+                        egui::ViewportBuilder::default()
+                            .with_title_shown(false)
+                            .with_titlebar_shown(false),
+                        |ctx, _class| {
+                            if ctx.input(|i| i.viewport().close_requested()) {
+                                wants_close.store(true, Ordering::Relaxed);
+                            }
+                            egui::CentralPanel::default().show(ctx, |ui| match page {
+                                Page::DmChatList => dm_chat_list::update(self, ctx, frame, ui),
+                                Page::Feed(_) => feed::update(self, ctx, ui),
+                                Page::Notifications => notifications::update(self, ui),
+                                Page::PeopleLists | Page::PeopleList(_) | Page::Person(_) => {
+                                    people::update(self, ctx, frame, ui)
+                                }
+                                Page::YourKeys
+                                | Page::YourMetadata
+                                | Page::YourDelegation
+                                | Page::YourNostrConnect => you::update(self, ctx, frame, ui),
+                                Page::RelaysActivityMonitor
+                                | Page::RelaysCoverage
+                                | Page::RelaysMine
+                                | Page::RelaysKnownNetwork(_) => {
+                                    relays::update(self, ctx, frame, ui)
+                                }
+                                Page::Search => search::update(self, ctx, frame, ui),
+                                Page::Settings => settings::update(self, ctx, frame, ui),
+                                Page::HelpHelp | Page::HelpStats | Page::HelpAbout => {
+                                    help::update(self, ctx, frame, ui)
+                                }
+                                Page::ThemeTest => theme::test_page::update(self, ctx, frame, ui),
+                                Page::Wizard(_) => unreachable!(),
+                            })
+                        },
+                    );
+                }
+            }
+            if wants_close.load(Ordering::Relaxed) {
+                close_list.push(window);
+            }
+        }
+        self.windows.retain(|entry| !close_list.contains(&entry));
     }
 }
 
@@ -1845,8 +1910,15 @@ impl GossipUi {
             }
         };
 
-        if self.add_selected_label(ui, condition, title).clicked() {
+        let response = self.add_selected_label(ui, condition, title);
+
+        if response.clicked() {
             self.set_page(ui.ctx(), page);
+        } else if response
+            .on_hover_text("Right click to open in new window")
+            .secondary_clicked()
+        {
+            self.windows.push(GossipWindow::Page(page));
         }
     }
 
