@@ -984,6 +984,22 @@ dependencies = [
 
 [[package]]
 name = "cocoa"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f425db7937052c684daec3bd6375c8abe2d146dca4b8b143d6db777c39138f3a"
+dependencies = [
+ "bitflags 1.3.2",
+ "block",
+ "cocoa-foundation",
+ "core-foundation",
+ "core-graphics 0.22.3",
+ "foreign-types 0.3.2",
+ "libc",
+ "objc",
+]
+
+[[package]]
+name = "cocoa"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6140449f97a6e97f9511815c5632d84c8aacf8ac271ad77c559218161a1373c"
@@ -992,7 +1008,7 @@ dependencies = [
  "block",
  "cocoa-foundation",
  "core-foundation",
- "core-graphics",
+ "core-graphics 0.23.2",
  "foreign-types 0.5.0",
  "libc",
  "objc",
@@ -1128,6 +1144,19 @@ checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
 
 [[package]]
 name = "core-graphics"
+version = "0.22.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2581bbab3b8ffc6fcbd550bf46c355135d16e9ff2a6ea032ad6b9bf1d7efe4fb"
+dependencies = [
+ "bitflags 1.3.2",
+ "core-foundation",
+ "core-graphics-types",
+ "foreign-types 0.3.2",
+ "libc",
+]
+
+[[package]]
+name = "core-graphics"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c07782be35f9e1140080c6b96f0d44b739e2278479f64e02fdab4e32dfd8b081"
@@ -1172,6 +1201,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3855a8a784b474f333699ef2bbca9db2c4a1f6d9088a90a2d25b1eb53111eaa"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33480d6946193aa8033910124896ca395333cae7e2d1113d1fef6c3272217df2"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -1396,7 +1434,7 @@ version = "0.26.2"
 source = "git+https://github.com/bu5hm4nn/egui?rev=63dde4c9b311da0cae0cb9f9465bf7273227be6c#63dde4c9b311da0cae0cb9f9465bf7273227be6c"
 dependencies = [
  "bytemuck",
- "cocoa",
+ "cocoa 0.25.0",
  "directories-next",
  "document-features",
  "egui",
@@ -2177,6 +2215,7 @@ version = "0.11.0-unstable"
 dependencies = [
  "bech32 0.11.0",
  "chrono",
+ "crossbeam-channel",
  "eframe",
  "egui-video",
  "egui-winit",
@@ -2189,6 +2228,7 @@ dependencies = [
  "memoize",
  "nostr-types",
  "paste",
+ "psp",
  "qrcode",
  "resvg",
  "rpassword",
@@ -3816,6 +3856,25 @@ name = "profiling"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d84d1d7a6ac92673717f9f6d1518374ef257669c24ebc5ac25d5033828be58"
+
+[[package]]
+name = "psp"
+version = "0.1.0"
+source = "git+https://github.com/pewsheen/psp#ddef0c61aeedc0ad1891de31659fd6c2e1bcaedb"
+dependencies = [
+ "cocoa 0.24.1",
+ "core-foundation",
+ "core-graphics 0.22.3",
+ "crossbeam-channel",
+ "dispatch",
+ "libc",
+ "objc",
+ "png",
+ "scopeguard",
+ "tokio",
+ "windows 0.48.0",
+ "zbus",
+]
 
 [[package]]
 name = "qoi"
@@ -6280,7 +6339,7 @@ dependencies = [
  "calloop",
  "cfg_aliases",
  "core-foundation",
- "core-graphics",
+ "core-graphics 0.23.2",
  "cursor-icon",
  "icrate",
  "js-sys",

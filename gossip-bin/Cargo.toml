@@ -48,6 +48,8 @@ url = "2.5"
 usvg = "0.35.0"
 zeroize = "1.7"
 chrono = ">=0.4.37"
+psp = { git = "https://github.com/pewsheen/psp" }
+crossbeam-channel = "0.5"
 
 [package.metadata.deb]
 section = "web"

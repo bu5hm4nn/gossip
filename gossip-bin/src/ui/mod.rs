@@ -72,6 +72,7 @@ use nostr_types::ContentSegment;
 use nostr_types::RelayUrl;
 use nostr_types::{Id, Metadata, MilliSatoshi, Profile, PublicKey, UncheckedUrl, Url};
 
+use psp::monitor::{PowerMonitor, PowerState};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 #[cfg(feature = "video-ffmpeg")]
@@ -394,6 +395,9 @@ struct GossipUi {
 
     initializing: bool,
 
+    // Power Handling
+    psp_receiver: crossbeam_channel::Receiver<PowerState>,
+
     // Rendering
     next_frame: Instant,
     override_dpi: bool,
@@ -660,6 +664,13 @@ impl GossipUi {
                 .store(max_image_side, Ordering::Relaxed);
         }
 
+        // power monitor
+        let psp_monitor = PowerMonitor::new();
+        if let Err(msg) = psp_monitor.start_listening() {
+            tracing::error!("Failed to start listening to power events: {}", msg);
+        }
+        let psp_receiver = psp_monitor.event_receiver();
+
         GossipUi {
             #[cfg(feature = "video-ffmpeg")]
             audio_device,
@@ -668,6 +679,7 @@ impl GossipUi {
             #[cfg(feature = "video-ffmpeg")]
             warn_no_libsdl2_dismissed: false,
             initializing: true,
+            psp_receiver,
             next_frame: Instant::now(),
             override_dpi,
             override_dpi_value,
@@ -1412,6 +1424,22 @@ impl eframe::App for GossipUi {
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let maximized = matches!(ctx.input(|i| i.viewport().maximized), Some(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+
+        // power monitor
+        if let Ok(event) = self.psp_receiver.try_recv() {
+            tracing::trace!("Power Event: {event:?}");
+            match event {
+                PowerState::Suspend => {
+                    let _ = GLOBALS.write_runstate.send(RunState::Offline);
+                }
+                PowerState::Resume => {
+                    if !self.unsaved_settings.offline {
+                        let _ = GLOBALS.write_runstate.send(RunState::Online);
+                    }
+                }
+                _ => {}
+            }
         }
 
         let mut reapply = false;
