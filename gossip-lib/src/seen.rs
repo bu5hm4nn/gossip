@@ -267,21 +267,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Storage;
     use std::collections::HashSet;
-    use std::sync::OnceLock;
 
-    // Storage's table handles are process-global. Use one isolated environment
-    // for both these tests and the Overlord persistence tests.
     fn test_storage() -> &'static Storage {
-        static DIR: OnceLock<tempdir::TempDir> = OnceLock::new();
-        let dir = DIR.get_or_init(|| tempdir::TempDir::new("gossip-db-writes").unwrap());
-        crate::GLOBALS.storage.get_or_init(|| {
-            let storage = Storage::new(dir.path(), true).unwrap();
-            // Initialize lazy tables before passing explicit write transactions.
-            storage.db_event_viewed().unwrap();
-            storage
-        })
+        let storage = crate::storage::test_storage();
+        // Initialize the lazy table before passing explicit write transactions.
+        storage.db_event_viewed().unwrap();
+        storage
     }
 
     fn id(seed: u8) -> Id {
